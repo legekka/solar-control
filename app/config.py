@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from pydantic_settings import BaseSettings
 
 from app.models import Host, HostStatus

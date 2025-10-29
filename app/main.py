@@ -78,6 +78,12 @@ async def verify_api_key(request: Request, call_next):
                     "param": None,
                     "code": "invalid_api_key"
                 }
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
             }
         )
     
