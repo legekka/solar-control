@@ -44,7 +44,7 @@ async def refresh_hosts_periodically():
                                         
                                         # Fetch memory information
                                         try:
-                                            memory_url = f"{host.url}/instances/memory"
+                                            memory_url = f"{host.url}/memory"
                                             async with session.get(memory_url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as mem_response:
                                                 if mem_response.status == 200:
                                                     memory_data = await mem_response.json()
