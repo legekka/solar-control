@@ -33,6 +33,7 @@ class ConnectionManager:
             self.disconnect(conn)
 
 manager = ConnectionManager()
+routing_manager = ConnectionManager()
 
 async def broadcast_host_status(status_update: dict):
     """Broadcast host status updates to all connected clients"""
@@ -40,6 +41,10 @@ async def broadcast_host_status(status_update: dict):
         "type": "host_status",
         "data": status_update
     })
+
+async def broadcast_routing_event(event_data: dict):
+    """Broadcast routing events to all connected clients"""
+    await routing_manager.broadcast(event_data)
 
 
 @router.websocket("/status")
@@ -76,6 +81,29 @@ async def status_updates(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket error: {e}")
         manager.disconnect(websocket)
+
+
+@router.websocket("/routing")
+async def routing_updates(websocket: WebSocket):
+    """WebSocket endpoint for real-time routing events"""
+    await routing_manager.connect(websocket)
+    
+    try:
+        # Keep connection alive and wait for disconnect
+        while True:
+            # Receive ping/pong to keep connection alive
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                if message == "ping":
+                    await websocket.send_text("pong")
+            except asyncio.TimeoutError:
+                # No message received, send a keepalive
+                await websocket.send_json({"type": "keepalive"})
+    except WebSocketDisconnect:
+        routing_manager.disconnect(websocket)
+    except Exception as e:
+        print(f"Routing WebSocket error: {e}")
+        routing_manager.disconnect(websocket)
 
 
 @router.websocket("/logs")

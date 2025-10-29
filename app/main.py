@@ -117,9 +117,9 @@ async def verify_api_key(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
     
-    # Allow access to health check, docs, and OpenAPI schema
+    # Allow access to health check, docs, OpenAPI schema, and WebSockets
     public_paths = ["/health", "/", "/docs", "/redoc", "/openapi.json"]
-    if request.url.path in public_paths:
+    if request.url.path in public_paths or request.url.path.startswith("/ws/"):
         return await call_next(request)
     
     # Support both X-API-Key and Authorization: Bearer for OpenAI compatibility
@@ -160,7 +160,7 @@ async def verify_api_key(request: Request, call_next):
 # Include routers
 app.include_router(hosts.router)
 app.include_router(openai.router)
-app.include_router(websockets.router)
+app.include_router(websockets.router, prefix="/ws")
 
 
 # Customize OpenAPI schema to add security

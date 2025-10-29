@@ -1,4 +1,6 @@
 import aiohttp
+import uuid
+import time
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
 from itertools import cycle
@@ -132,6 +134,24 @@ class OpenAIGateway:
     
     async def route_request(self, model: str, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Route a request to the appropriate instance"""
+        # Generate unique request ID and start time
+        request_id = str(uuid.uuid4())
+        start_time = time.time()
+        
+        # Import here to avoid circular dependency
+        from app.routes.websockets import broadcast_routing_event
+        
+        # Emit request start event
+        await broadcast_routing_event({
+            "type": "request_start",
+            "data": {
+                "request_id": request_id,
+                "model": model,
+                "endpoint": endpoint,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        })
+        
         await self._ensure_session()
         
         if not self.session:
@@ -143,7 +163,31 @@ class OpenAIGateway:
         # Get instance for this model
         instance = self._get_next_instance(model)
         if not instance:
-            raise ValueError(f"Model '{model}' not found or no instances available")
+            error_msg = f"Model '{model}' not found or no instances available"
+            # Emit error event
+            await broadcast_routing_event({
+                "type": "request_error",
+                "data": {
+                    "request_id": request_id,
+                    "model": model,
+                    "error_message": error_msg,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            })
+            raise ValueError(error_msg)
+        
+        # Emit routing event (instance selected)
+        await broadcast_routing_event({
+            "type": "request_routed",
+            "data": {
+                "request_id": request_id,
+                "model": model,
+                "host_id": instance['host_id'],
+                "instance_id": instance['instance_id'],
+                "instance_url": instance['url'],
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        })
         
         # Forward request to instance
         url = f"{instance['url']}{endpoint}"
@@ -155,15 +199,81 @@ class OpenAIGateway:
         try:
             async with self.session.post(url, json=data, headers=headers) as response:
                 if response.status == 200:
-                    return await response.json()
+                    result = await response.json()
+                    duration = time.time() - start_time
+                    
+                    # Emit success event
+                    await broadcast_routing_event({
+                        "type": "request_success",
+                        "data": {
+                            "request_id": request_id,
+                            "model": model,
+                            "host_id": instance['host_id'],
+                            "instance_id": instance['instance_id'],
+                            "duration": duration,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    })
+                    
+                    return result
                 else:
                     error_text = await response.text()
+                    duration = time.time() - start_time
+                    
+                    # Emit error event
+                    await broadcast_routing_event({
+                        "type": "request_error",
+                        "data": {
+                            "request_id": request_id,
+                            "model": model,
+                            "host_id": instance['host_id'],
+                            "instance_id": instance['instance_id'],
+                            "error_message": f"Request failed: {response.status} - {error_text}",
+                            "duration": duration,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    })
                     raise Exception(f"Request failed: {response.status} - {error_text}")
         except Exception as e:
+            duration = time.time() - start_time
+            
+            # Emit error event if not already emitted
+            if "request_id" in locals():
+                await broadcast_routing_event({
+                    "type": "request_error",
+                    "data": {
+                        "request_id": request_id,
+                        "model": model,
+                        "host_id": instance.get('host_id') if instance else None,
+                        "instance_id": instance.get('instance_id') if instance else None,
+                        "error_message": str(e),
+                        "duration": duration,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                })
             raise Exception(f"Failed to route request: {str(e)}")
     
     async def stream_request(self, model: str, endpoint: str, data: Dict[str, Any]):
         """Stream a request to the appropriate instance"""
+        # Generate unique request ID and start time
+        request_id = str(uuid.uuid4())
+        start_time = time.time()
+        
+        # Import here to avoid circular dependency
+        from app.routes.websockets import broadcast_routing_event
+        
+        # Emit request start event
+        await broadcast_routing_event({
+            "type": "request_start",
+            "data": {
+                "request_id": request_id,
+                "model": model,
+                "endpoint": endpoint,
+                "stream": True,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        })
+        
         await self._ensure_session()
         
         if not self.session:
@@ -175,7 +285,31 @@ class OpenAIGateway:
         # Get instance for this model
         instance = self._get_next_instance(model)
         if not instance:
-            raise ValueError(f"Model '{model}' not found or no instances available")
+            error_msg = f"Model '{model}' not found or no instances available"
+            # Emit error event
+            await broadcast_routing_event({
+                "type": "request_error",
+                "data": {
+                    "request_id": request_id,
+                    "model": model,
+                    "error_message": error_msg,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            })
+            raise ValueError(error_msg)
+        
+        # Emit routing event (instance selected)
+        await broadcast_routing_event({
+            "type": "request_routed",
+            "data": {
+                "request_id": request_id,
+                "model": model,
+                "host_id": instance['host_id'],
+                "instance_id": instance['instance_id'],
+                "instance_url": instance['url'],
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        })
         
         # Forward request to instance
         url = f"{instance['url']}{endpoint}"
@@ -184,13 +318,60 @@ class OpenAIGateway:
             "Content-Type": "application/json"
         }
         
-        async with self.session.post(url, json=data, headers=headers) as response:
-            if response.status == 200:
-                async for line in response.content:
-                    yield line
-            else:
-                error_text = await response.text()
-                raise Exception(f"Request failed: {response.status} - {error_text}")
+        try:
+            async with self.session.post(url, json=data, headers=headers) as response:
+                if response.status == 200:
+                    async for line in response.content:
+                        yield line
+                    
+                    # Emit success event after stream completes
+                    duration = time.time() - start_time
+                    await broadcast_routing_event({
+                        "type": "request_success",
+                        "data": {
+                            "request_id": request_id,
+                            "model": model,
+                            "host_id": instance['host_id'],
+                            "instance_id": instance['instance_id'],
+                            "duration": duration,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    })
+                else:
+                    error_text = await response.text()
+                    duration = time.time() - start_time
+                    
+                    # Emit error event
+                    await broadcast_routing_event({
+                        "type": "request_error",
+                        "data": {
+                            "request_id": request_id,
+                            "model": model,
+                            "host_id": instance['host_id'],
+                            "instance_id": instance['instance_id'],
+                            "error_message": f"Request failed: {response.status} - {error_text}",
+                            "duration": duration,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    })
+                    raise Exception(f"Request failed: {response.status} - {error_text}")
+        except Exception as e:
+            duration = time.time() - start_time
+            
+            # Emit error event
+            await broadcast_routing_event({
+                "type": "request_error",
+                "data": {
+                    "request_id": request_id,
+                    "model": model,
+                    "host_id": instance.get('host_id') if instance else None,
+                    "instance_id": instance.get('instance_id') if instance else None,
+                    "error_message": str(e),
+                    "duration": duration,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            })
+            raise
 
 
 # Global gateway instance
