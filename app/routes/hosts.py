@@ -329,6 +329,33 @@ async def create_instance(host_id: str, instance_data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put("/{host_id}/instances/{instance_id}")
+async def update_instance(host_id: str, instance_id: str, instance_data: dict):
+    """Update an instance configuration on a host"""
+    host = host_manager.get_host(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{host.url}/instances/{instance_id}"
+            headers = {"X-API-Key": host.api_key, "Content-Type": "application/json"}
+            
+            async with session.put(url, json=instance_data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    error_text = await response.text()
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=f"Failed to update instance: {error_text}"
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/{host_id}/instances/{instance_id}")
 async def delete_instance(host_id: str, instance_id: str):
     """Delete an instance from a host"""
