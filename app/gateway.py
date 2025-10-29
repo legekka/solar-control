@@ -70,8 +70,7 @@ class OpenAIGateway:
                     else:
                         host_manager.update_host_status(host.id, HostStatus.ERROR)
                         
-            except Exception as e:
-                print(f"Error querying host {host.name}: {e}")
+            except Exception:
                 host_manager.update_host_status(host.id, HostStatus.OFFLINE)
         
         # Create round-robin iterators for each model
@@ -98,7 +97,7 @@ class OpenAIGateway:
             instance = instances[0]
             try:
                 url = f"{instance['url']}/v1/models"
-                headers = {"X-API-Key": instance['api_key']}
+                headers = {"Authorization": f"Bearer {instance['api_key']}"}
                 
                 async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status == 200:
@@ -111,8 +110,7 @@ class OpenAIGateway:
                                 model_id = model.get('id', alias)
                                 if model_id not in models_dict:
                                     models_dict[model_id] = model
-            except Exception as e:
-                print(f"Error fetching model info from {instance['url']}: {e}")
+            except Exception:
                 # Fallback: create minimal model info
                 if alias not in models_dict:
                     models_dict[alias] = {
@@ -150,7 +148,7 @@ class OpenAIGateway:
         # Forward request to instance
         url = f"{instance['url']}{endpoint}"
         headers = {
-            "X-API-Key": instance['api_key'],
+            "Authorization": f"Bearer {instance['api_key']}",
             "Content-Type": "application/json"
         }
         
@@ -182,7 +180,7 @@ class OpenAIGateway:
         # Forward request to instance
         url = f"{instance['url']}{endpoint}"
         headers = {
-            "X-API-Key": instance['api_key'],
+            "Authorization": f"Bearer {instance['api_key']}",
             "Content-Type": "application/json"
         }
         
