@@ -11,6 +11,14 @@ class HostStatus(str, Enum):
     ERROR = "error"
 
 
+class MemoryInfo(BaseModel):
+    """Memory usage information"""
+    used_gb: float = Field(..., description="Used memory in GB")
+    total_gb: float = Field(..., description="Total memory in GB")
+    percent: float = Field(..., description="Usage percentage")
+    memory_type: str = Field(..., description="Type of memory (VRAM or RAM)")
+
+
 class Host(BaseModel):
     """Solar host information"""
     id: str
@@ -19,6 +27,7 @@ class Host(BaseModel):
     api_key: str
     status: HostStatus = HostStatus.OFFLINE
     last_seen: Optional[datetime] = None
+    memory: Optional[MemoryInfo] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

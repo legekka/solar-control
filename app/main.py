@@ -27,6 +27,8 @@ async def refresh_hosts_periodically():
             async with aiohttp.ClientSession() as session:
                 for host in hosts:
                     old_status = host.status
+                    memory_data = None
+                    
                     try:
                         # Quick health check
                         url = f"{host.url}/health"
@@ -39,6 +41,20 @@ async def refresh_hosts_periodically():
                                     if inst_response.status == 200:
                                         host_manager.update_host_status(host.id, HostStatus.ONLINE)
                                         new_status = "online"
+                                        
+                                        # Fetch memory information
+                                        try:
+                                            memory_url = f"{host.url}/instances/memory"
+                                            async with session.get(memory_url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as mem_response:
+                                                if mem_response.status == 200:
+                                                    memory_data = await mem_response.json()
+                                                    # Update host with memory data
+                                                    from app.models import MemoryInfo
+                                                    host.memory = MemoryInfo(**memory_data)
+                                                    host_manager.save_hosts()
+                                        except Exception:
+                                            # Memory fetch failed, but host is still online
+                                            pass
                                     else:
                                         host_manager.update_host_status(host.id, HostStatus.ERROR)
                                         new_status = "error"
@@ -49,13 +65,14 @@ async def refresh_hosts_periodically():
                         host_manager.update_host_status(host.id, HostStatus.OFFLINE)
                         new_status = "offline"
                     
-                    # Broadcast status change if different
-                    if old_status.value != new_status:
+                    # Broadcast if status changed or memory updated
+                    if old_status.value != new_status or memory_data:
                         await broadcast_host_status({
                             "host_id": host.id,
                             "name": host.name,
                             "status": new_status,
-                            "url": host.url
+                            "url": host.url,
+                            "memory": memory_data
                         })
         except Exception as e:
             print(f"Error in host refresh task: {e}")
