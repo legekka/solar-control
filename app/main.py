@@ -32,7 +32,8 @@ app = FastAPI(
     title="Solar Control",
     description="Coordinator for multiple solar-host instances with OpenAI-compatible API gateway",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True}
 )
 
 # CORS middleware
@@ -48,8 +49,10 @@ app.add_middleware(
 # API Key authentication middleware
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
-    """Verify API key for all requests except health check"""
-    if request.url.path == "/health":
+    """Verify API key for all requests except health check and OpenAPI docs"""
+    # Allow access to health check, docs, and OpenAPI schema
+    public_paths = ["/health", "/", "/docs", "/redoc", "/openapi.json"]
+    if request.url.path in public_paths:
         return await call_next(request)
     
     api_key = request.headers.get("X-API-Key")
@@ -66,6 +69,43 @@ async def verify_api_key(request: Request, call_next):
 app.include_router(hosts.router)
 app.include_router(openai.router)
 app.include_router(websockets.router)
+
+
+# Customize OpenAPI schema to add security
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    
+    # Add security scheme
+    openapi_schema["components"]["securitySchemes"] = {
+        "APIKeyHeader": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Key"
+        }
+    }
+    
+    # Apply security to all paths except public ones
+    public_paths = ["/health", "/", "/docs", "/redoc", "/openapi.json"]
+    for path, path_item in openapi_schema["paths"].items():
+        if path not in public_paths:
+            for operation in path_item.values():
+                if isinstance(operation, dict):
+                    operation["security"] = [{"APIKeyHeader": []}]
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 @app.get("/health")
