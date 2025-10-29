@@ -16,8 +16,10 @@ class OpenAIGateway:
     def __init__(self):
         # Map of model alias to list of instance info dictionaries
         self.model_to_hosts: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        # Round-robin iterators for each model
+        # Round-robin iterators for each model (used as tiebreaker)
         self.model_iterators: Dict[str, Any] = {}  # cycle objects don't have good type hints
+        # Track active requests per instance (instance_id -> count)
+        self.active_requests: Dict[str, int] = defaultdict(int)
         self.session: Optional[aiohttp.ClientSession] = None
     
     async def _ensure_session(self):
@@ -125,12 +127,46 @@ class OpenAIGateway:
         return list(models_dict.values())
     
     def _get_next_instance(self, model: str) -> Optional[Dict[str, Any]]:
-        """Get next instance for a model using round-robin"""
-        if model not in self.model_iterators:
+        """Get next instance for a model using intelligent load balancing
+        
+        Strategy:
+        1. Prefer instances with no active requests (free)
+        2. If all busy, choose the least busy one
+        3. Use round-robin as tiebreaker among equally busy instances
+        """
+        if model not in self.model_to_hosts or not self.model_to_hosts[model]:
             return None
         
-        # Get next instance from round-robin
-        return next(self.model_iterators[model])
+        available_instances = self.model_to_hosts[model]
+        
+        # Find the instance with minimum active requests
+        min_requests = float('inf')
+        best_instances = []
+        
+        for instance in available_instances:
+            instance_key = f"{instance['host_id']}-{instance['instance_id']}"
+            active = self.active_requests.get(instance_key, 0)
+            
+            if active < min_requests:
+                min_requests = active
+                best_instances = [instance]
+            elif active == min_requests:
+                best_instances.append(instance)
+        
+        # If we have multiple instances with same load, use round-robin as tiebreaker
+        if len(best_instances) == 1:
+            return best_instances[0]
+        
+        # Use round-robin among the least busy instances
+        if model in self.model_iterators:
+            # Find the next instance in round-robin that's also in best_instances
+            for _ in range(len(available_instances)):
+                candidate = next(self.model_iterators[model])
+                if candidate in best_instances:
+                    return candidate
+        
+        # Fallback: return first best instance
+        return best_instances[0]
     
     async def route_request(self, model: str, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Route a request to the appropriate instance"""
@@ -176,27 +212,31 @@ class OpenAIGateway:
             })
             raise ValueError(error_msg)
         
-        # Emit routing event (instance selected)
-        await broadcast_routing_event({
-            "type": "request_routed",
-            "data": {
-                "request_id": request_id,
-                "model": model,
-                "host_id": instance['host_id'],
-                "instance_id": instance['instance_id'],
-                "instance_url": instance['url'],
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        })
-        
-        # Forward request to instance
-        url = f"{instance['url']}{endpoint}"
-        headers = {
-            "Authorization": f"Bearer {instance['api_key']}",
-            "Content-Type": "application/json"
-        }
+        # Track this request as active
+        instance_key = f"{instance['host_id']}-{instance['instance_id']}"
+        self.active_requests[instance_key] += 1
         
         try:
+            # Emit routing event (instance selected)
+            await broadcast_routing_event({
+                "type": "request_routed",
+                "data": {
+                    "request_id": request_id,
+                    "model": model,
+                    "host_id": instance['host_id'],
+                    "instance_id": instance['instance_id'],
+                    "instance_url": instance['url'],
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            })
+            
+            # Forward request to instance
+            url = f"{instance['url']}{endpoint}"
+            headers = {
+                "Authorization": f"Bearer {instance['api_key']}",
+                "Content-Type": "application/json"
+            }
+            
             async with self.session.post(url, json=data, headers=headers) as response:
                 if response.status == 200:
                     result = await response.json()
@@ -237,21 +277,23 @@ class OpenAIGateway:
         except Exception as e:
             duration = time.time() - start_time
             
-            # Emit error event if not already emitted
-            if "request_id" in locals():
-                await broadcast_routing_event({
-                    "type": "request_error",
-                    "data": {
-                        "request_id": request_id,
-                        "model": model,
-                        "host_id": instance.get('host_id') if instance else None,
-                        "instance_id": instance.get('instance_id') if instance else None,
-                        "error_message": str(e),
-                        "duration": duration,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                })
+            # Emit error event
+            await broadcast_routing_event({
+                "type": "request_error",
+                "data": {
+                    "request_id": request_id,
+                    "model": model,
+                    "host_id": instance.get('host_id') if instance else None,
+                    "instance_id": instance.get('instance_id') if instance else None,
+                    "error_message": str(e),
+                    "duration": duration,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            })
             raise Exception(f"Failed to route request: {str(e)}")
+        finally:
+            # Always decrement active requests count
+            self.active_requests[instance_key] = max(0, self.active_requests[instance_key] - 1)
     
     async def stream_request(self, model: str, endpoint: str, data: Dict[str, Any]):
         """Stream a request to the appropriate instance"""
@@ -298,27 +340,31 @@ class OpenAIGateway:
             })
             raise ValueError(error_msg)
         
-        # Emit routing event (instance selected)
-        await broadcast_routing_event({
-            "type": "request_routed",
-            "data": {
-                "request_id": request_id,
-                "model": model,
-                "host_id": instance['host_id'],
-                "instance_id": instance['instance_id'],
-                "instance_url": instance['url'],
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        })
-        
-        # Forward request to instance
-        url = f"{instance['url']}{endpoint}"
-        headers = {
-            "Authorization": f"Bearer {instance['api_key']}",
-            "Content-Type": "application/json"
-        }
+        # Track this request as active
+        instance_key = f"{instance['host_id']}-{instance['instance_id']}"
+        self.active_requests[instance_key] += 1
         
         try:
+            # Emit routing event (instance selected)
+            await broadcast_routing_event({
+                "type": "request_routed",
+                "data": {
+                    "request_id": request_id,
+                    "model": model,
+                    "host_id": instance['host_id'],
+                    "instance_id": instance['instance_id'],
+                    "instance_url": instance['url'],
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            })
+            
+            # Forward request to instance
+            url = f"{instance['url']}{endpoint}"
+            headers = {
+                "Authorization": f"Bearer {instance['api_key']}",
+                "Content-Type": "application/json"
+            }
+            
             async with self.session.post(url, json=data, headers=headers) as response:
                 if response.status == 200:
                     async for line in response.content:
@@ -372,6 +418,9 @@ class OpenAIGateway:
                 }
             })
             raise
+        finally:
+            # Always decrement active requests count
+            self.active_requests[instance_key] = max(0, self.active_requests[instance_key] - 1)
 
 
 # Global gateway instance
