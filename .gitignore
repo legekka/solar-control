@@ -38,7 +38,7 @@ ENV/
 Thumbs.db
 
 # Project specific
-hosts.json
+data/
 *.log
 
 # Environment

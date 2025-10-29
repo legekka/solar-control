@@ -18,9 +18,10 @@ COPY . .
 # Create directory for persistent data
 RUN mkdir -p /app/data
 
-# Expose port
-EXPOSE 8000
+# Note: With host networking, EXPOSE is just documentation
+# The actual port is determined by the PORT environment variable at runtime
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use shell form to allow environment variable expansion
+CMD uvicorn app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}
 

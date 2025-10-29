@@ -38,10 +38,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ## Running with Docker
 
 ```bash
-# Build the image
-docker build -t solar-control .
+# Create the data directory first (if it doesn't exist)
+mkdir -p data
 
-# Run with docker-compose
+# Build and start with docker-compose
 docker-compose up -d
 
 # View logs
@@ -50,6 +50,8 @@ docker-compose logs -f
 # Stop
 docker-compose down
 ```
+
+**Note:** Configuration and hosts are stored in the `data/` directory, which is mounted as a volume. This ensures your data persists across container restarts.
 
 ## API Endpoints
 

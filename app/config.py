@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
 from pydantic_settings import BaseSettings
 
 from app.models import Host, HostStatus
@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     api_key: str = "change-me-please"
     host: str = "0.0.0.0"
     port: int = 8000
-    hosts_file: str = "hosts.json"
+    hosts_file: str = "data/hosts.json"  # Store in data directory
     
     class Config:
         env_file = ".env"
@@ -24,7 +24,7 @@ settings = Settings()
 class HostManager:
     """Manages registered solar-hosts"""
     
-    def __init__(self, hosts_file: str = None):
+    def __init__(self, hosts_file: Optional[str] = None):
         self.hosts_file = Path(hosts_file or settings.hosts_file)
         self.hosts: Dict[str, Host] = {}
         self.load()
@@ -70,7 +70,7 @@ class HostManager:
             del self.hosts[host_id]
             self.save()
     
-    def get_host(self, host_id: str) -> Host:
+    def get_host(self, host_id: str) -> Optional[Host]:
         """Get a host by ID"""
         return self.hosts.get(host_id)
     

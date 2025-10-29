@@ -1,22 +1,19 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.models import (
-    ChatCompletionRequest, CompletionRequest, 
-    ModelsResponse
-)
+from app.models import ChatCompletionRequest, CompletionRequest
 from app.gateway import gateway
 
 
 router = APIRouter(prefix="/v1", tags=["openai"])
 
 
-@router.get("/models", response_model=ModelsResponse)
+@router.get("/models")
 async def list_models():
     """List all available models (OpenAI compatible)"""
     try:
         models = await gateway.get_available_models()
-        return ModelsResponse(data=models)
+        return {"object": "list", "data": models}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

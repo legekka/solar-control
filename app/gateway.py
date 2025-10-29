@@ -2,19 +2,20 @@ import aiohttp
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
 from itertools import cycle
+from datetime import datetime
 
 from app.config import host_manager
-from app.models import HostStatus, ModelInfo
+from app.models import HostStatus
 
 
 class OpenAIGateway:
     """OpenAI-compatible API gateway with routing and load balancing"""
     
     def __init__(self):
-        # Map of model alias to list of (host_id, instance_info)
-        self.model_to_hosts: Dict[str, List[tuple]] = defaultdict(list)
+        # Map of model alias to list of instance info dictionaries
+        self.model_to_hosts: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         # Round-robin iterators for each model
-        self.model_iterators: Dict[str, cycle] = {}
+        self.model_iterators: Dict[str, Any] = {}  # cycle objects don't have good type hints
         self.session: Optional[aiohttp.ClientSession] = None
     
     async def _ensure_session(self):
@@ -42,7 +43,7 @@ class OpenAIGateway:
                 url = f"{host.url}/instances"
                 headers = {"X-API-Key": host.api_key}
                 
-                async with self.session.get(url, headers=headers, timeout=5) as response:
+                async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status == 200:
                         instances = await response.json()
                         
@@ -78,15 +79,50 @@ class OpenAIGateway:
             if instances:
                 self.model_iterators[alias] = cycle(instances)
     
-    async def get_available_models(self) -> List[ModelInfo]:
-        """Get list of all available models"""
+    async def get_available_models(self) -> List[Dict[str, Any]]:
+        """Get list of all available models with full metadata from llama.cpp servers"""
         await self.refresh_model_registry()
+        await self._ensure_session()
         
-        models = []
-        for alias in self.model_to_hosts.keys():
-            models.append(ModelInfo(id=alias, owned_by="solar"))
+        if not self.session:
+            return []
         
-        return models
+        models_dict = {}  # Use dict to deduplicate by model ID
+        
+        # Query each instance directly to get full model info
+        for alias, instances in self.model_to_hosts.items():
+            if not instances:
+                continue
+            
+            # Get model info from the first available instance
+            instance = instances[0]
+            try:
+                url = f"{instance['url']}/v1/models"
+                headers = {"X-API-Key": instance['api_key']}
+                
+                async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        # llama.cpp returns both "models" and "data" arrays
+                        # Use the "data" array which has the OpenAI-compatible format
+                        if 'data' in data and data['data']:
+                            for model in data['data']:
+                                # Use the model ID as key to avoid duplicates
+                                model_id = model.get('id', alias)
+                                if model_id not in models_dict:
+                                    models_dict[model_id] = model
+            except Exception as e:
+                print(f"Error fetching model info from {instance['url']}: {e}")
+                # Fallback: create minimal model info
+                if alias not in models_dict:
+                    models_dict[alias] = {
+                        "id": alias,
+                        "object": "model",
+                        "created": int(datetime.now().timestamp()),
+                        "owned_by": "solar"
+                    }
+        
+        return list(models_dict.values())
     
     def _get_next_instance(self, model: str) -> Optional[Dict[str, Any]]:
         """Get next instance for a model using round-robin"""
@@ -99,6 +135,9 @@ class OpenAIGateway:
     async def route_request(self, model: str, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Route a request to the appropriate instance"""
         await self._ensure_session()
+        
+        if not self.session:
+            raise RuntimeError("Failed to create aiohttp session")
         
         # Refresh registry to get latest instances
         await self.refresh_model_registry()
@@ -128,6 +167,9 @@ class OpenAIGateway:
     async def stream_request(self, model: str, endpoint: str, data: Dict[str, Any]):
         """Stream a request to the appropriate instance"""
         await self._ensure_session()
+        
+        if not self.session:
+            raise RuntimeError("Failed to create aiohttp session")
         
         # Refresh registry to get latest instances
         await self.refresh_model_registry()

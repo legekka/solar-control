@@ -55,11 +55,30 @@ async def verify_api_key(request: Request, call_next):
     if request.url.path in public_paths:
         return await call_next(request)
     
-    api_key = request.headers.get("X-API-Key")
+    # Support both X-API-Key and Authorization: Bearer for OpenAI compatibility
+    api_key = None
+    
+    # Check X-API-Key header (for internal/host management)
+    x_api_key = request.headers.get("X-API-Key")
+    if x_api_key:
+        api_key = x_api_key
+    
+    # Check Authorization: Bearer header (for OpenAI compatibility)
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        api_key = auth_header[7:]  # Remove "Bearer " prefix
+    
     if not api_key or api_key != settings.api_key:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Invalid or missing API key"}
+            content={
+                "error": {
+                    "message": "Incorrect API key provided. You can find your API key in your configuration.",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "invalid_api_key"
+                }
+            }
         )
     
     return await call_next(request)
@@ -84,12 +103,18 @@ def custom_openapi():
         routes=app.routes,
     )
     
-    # Add security scheme
+    # Add security schemes (support both X-API-Key and Bearer token)
     openapi_schema["components"]["securitySchemes"] = {
         "APIKeyHeader": {
             "type": "apiKey",
             "in": "header",
-            "name": "X-API-Key"
+            "name": "X-API-Key",
+            "description": "API Key for host management endpoints"
+        },
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "description": "Bearer token for OpenAI-compatible endpoints"
         }
     }
     
@@ -99,13 +124,17 @@ def custom_openapi():
         if path not in public_paths:
             for operation in path_item.values():
                 if isinstance(operation, dict):
-                    operation["security"] = [{"APIKeyHeader": []}]
+                    # OpenAI endpoints support Bearer token, others use X-API-Key
+                    if path.startswith("/v1/"):
+                        operation["security"] = [{"BearerAuth": []}, {"APIKeyHeader": []}]
+                    else:
+                        operation["security"] = [{"APIKeyHeader": []}]
     
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 
-app.openapi = custom_openapi
+app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
 @app.get("/health")
