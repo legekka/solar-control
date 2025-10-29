@@ -243,3 +243,57 @@ async def restart_instance(host_id: str, instance_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/{host_id}/instances")
+async def create_instance(host_id: str, instance_data: dict):
+    """Create a new instance on a host"""
+    host = host_manager.get_host(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{host.url}/instances"
+            headers = {"X-API-Key": host.api_key, "Content-Type": "application/json"}
+            
+            async with session.post(url, json=instance_data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    error_text = await response.text()
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=f"Failed to create instance: {error_text}"
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{host_id}/instances/{instance_id}")
+async def delete_instance(host_id: str, instance_id: str):
+    """Delete an instance from a host"""
+    host = host_manager.get_host(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{host.url}/instances/{instance_id}"
+            headers = {"X-API-Key": host.api_key}
+            
+            async with session.delete(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    error_text = await response.text()
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=f"Failed to delete instance: {error_text}"
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
