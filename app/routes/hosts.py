@@ -48,8 +48,8 @@ async def register_host(data: HostCreate):
                     if response.status == 200:
                         from app.models import HostStatus
                         host.status = HostStatus.ONLINE
-                        from datetime import datetime
-                        host.last_seen = datetime.now()
+                        from datetime import datetime, timezone
+                        host.last_seen = datetime.now(timezone.utc)
         except Exception as e:
             print(f"Warning: Could not verify host API key: {e}")
             # Still register the host, but it will stay offline

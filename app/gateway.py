@@ -2,7 +2,7 @@ import aiohttp
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
 from itertools import cycle
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.config import host_manager
 from app.models import HostStatus
@@ -118,7 +118,7 @@ class OpenAIGateway:
                     models_dict[alias] = {
                         "id": alias,
                         "object": "model",
-                        "created": int(datetime.now().timestamp()),
+                        "created": int(datetime.now(timezone.utc).timestamp()),
                         "owned_by": "solar"
                     }
         

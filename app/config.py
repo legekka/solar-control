@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from pydantic_settings import BaseSettings
 
 from app.models import Host, HostStatus
@@ -83,8 +83,8 @@ class HostManager:
         if host_id in self.hosts:
             self.hosts[host_id].status = status
             if status == HostStatus.ONLINE:
-                from datetime import datetime
-                self.hosts[host_id].last_seen = datetime.now()
+                from datetime import datetime, timezone
+                self.hosts[host_id].last_seen = datetime.now(timezone.utc)
             self.save()
 
 

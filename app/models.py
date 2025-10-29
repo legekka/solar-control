@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Any, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -19,7 +19,7 @@ class Host(BaseModel):
     api_key: str
     status: HostStatus = HostStatus.OFFLINE
     last_seen: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class HostCreate(BaseModel):
@@ -39,7 +39,7 @@ class ModelInfo(BaseModel):
     """Model information for OpenAI compatibility"""
     id: str
     object: str = "model"
-    created: int = Field(default_factory=lambda: int(datetime.now().timestamp()))
+    created: int = Field(default_factory=lambda: int(datetime.now(timezone.utc).timestamp()))
     owned_by: str = "solar"
 
 
