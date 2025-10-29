@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  solar-control:
+    build: .
+    container_name: solar-control
+    ports:
+      - "8000:8000"
+    environment:
+      - API_KEY=${API_KEY:-change-me-please}
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - ./hosts.json:/app/hosts.json
+      - ./data:/app/data
+    restart: unless-stopped
+    networks:
+      - solar-network
+
+networks:
+  solar-network:
+    driver: bridge
+
