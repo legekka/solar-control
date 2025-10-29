@@ -168,7 +168,7 @@ class OpenAIGateway:
         # Fallback: return first best instance
         return best_instances[0]
     
-    async def route_request(self, model: str, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def route_request(self, model: str, endpoint: str, data: Dict[str, Any], client_ip: str = "unknown") -> Dict[str, Any]:
         """Route a request to the appropriate instance"""
         # Generate unique request ID and start time
         request_id = str(uuid.uuid4())
@@ -176,6 +176,7 @@ class OpenAIGateway:
         
         # Import here to avoid circular dependency
         from app.routes.websockets import broadcast_routing_event
+        from app.config import host_manager
         
         # Emit request start event
         await broadcast_routing_event({
@@ -184,6 +185,7 @@ class OpenAIGateway:
                 "request_id": request_id,
                 "model": model,
                 "endpoint": endpoint,
+                "client_ip": client_ip,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
         })
@@ -207,6 +209,7 @@ class OpenAIGateway:
                     "request_id": request_id,
                     "model": model,
                     "error_message": error_msg,
+                    "client_ip": client_ip,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             })
@@ -216,6 +219,10 @@ class OpenAIGateway:
         instance_key = f"{instance['host_id']}-{instance['instance_id']}"
         self.active_requests[instance_key] += 1
         
+        # Get host name
+        host = host_manager.get_host(instance['host_id'])
+        host_name = host.name if host else "unknown"
+        
         try:
             # Emit routing event (instance selected)
             await broadcast_routing_event({
@@ -224,8 +231,10 @@ class OpenAIGateway:
                     "request_id": request_id,
                     "model": model,
                     "host_id": instance['host_id'],
+                    "host_name": host_name,
                     "instance_id": instance['instance_id'],
                     "instance_url": instance['url'],
+                    "client_ip": client_ip,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             })
@@ -295,7 +304,7 @@ class OpenAIGateway:
             # Always decrement active requests count
             self.active_requests[instance_key] = max(0, self.active_requests[instance_key] - 1)
     
-    async def stream_request(self, model: str, endpoint: str, data: Dict[str, Any]):
+    async def stream_request(self, model: str, endpoint: str, data: Dict[str, Any], client_ip: str = "unknown"):
         """Stream a request to the appropriate instance"""
         # Generate unique request ID and start time
         request_id = str(uuid.uuid4())
@@ -303,6 +312,7 @@ class OpenAIGateway:
         
         # Import here to avoid circular dependency
         from app.routes.websockets import broadcast_routing_event
+        from app.config import host_manager
         
         # Emit request start event
         await broadcast_routing_event({
@@ -312,6 +322,7 @@ class OpenAIGateway:
                 "model": model,
                 "endpoint": endpoint,
                 "stream": True,
+                "client_ip": client_ip,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
         })
@@ -335,6 +346,7 @@ class OpenAIGateway:
                     "request_id": request_id,
                     "model": model,
                     "error_message": error_msg,
+                    "client_ip": client_ip,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             })
@@ -344,6 +356,10 @@ class OpenAIGateway:
         instance_key = f"{instance['host_id']}-{instance['instance_id']}"
         self.active_requests[instance_key] += 1
         
+        # Get host name
+        host = host_manager.get_host(instance['host_id'])
+        host_name = host.name if host else "unknown"
+        
         try:
             # Emit routing event (instance selected)
             await broadcast_routing_event({
@@ -352,8 +368,10 @@ class OpenAIGateway:
                     "request_id": request_id,
                     "model": model,
                     "host_id": instance['host_id'],
+                    "host_name": host_name,
                     "instance_id": instance['instance_id'],
                     "instance_url": instance['url'],
+                    "client_ip": client_ip,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             })

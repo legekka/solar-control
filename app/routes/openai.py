@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.models import ChatCompletionRequest, CompletionRequest
@@ -19,9 +19,12 @@ async def list_models():
 
 
 @router.post("/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(request: ChatCompletionRequest, client: Request):
     """Chat completions endpoint (OpenAI compatible)"""
     try:
+        # Get client IP
+        client_ip = client.client.host if client.client else "unknown"
+        
         # Convert request to dict
         request_data = request.model_dump(exclude_none=True)
         
@@ -33,7 +36,8 @@ async def chat_completions(request: ChatCompletionRequest):
                     async for chunk in gateway.stream_request(
                         request.model,
                         "/v1/chat/completions",
-                        request_data
+                        request_data,
+                        client_ip
                     ):
                         yield chunk
                 except Exception as e:
@@ -48,7 +52,8 @@ async def chat_completions(request: ChatCompletionRequest):
             response = await gateway.route_request(
                 request.model,
                 "/v1/chat/completions",
-                request_data
+                request_data,
+                client_ip
             )
             return response
             
@@ -59,9 +64,12 @@ async def chat_completions(request: ChatCompletionRequest):
 
 
 @router.post("/completions")
-async def completions(request: CompletionRequest):
+async def completions(request: CompletionRequest, client: Request):
     """Text completions endpoint (OpenAI compatible)"""
     try:
+        # Get client IP
+        client_ip = client.client.host if client.client else "unknown"
+        
         # Convert request to dict
         request_data = request.model_dump(exclude_none=True)
         
@@ -73,7 +81,8 @@ async def completions(request: CompletionRequest):
                     async for chunk in gateway.stream_request(
                         request.model,
                         "/v1/completions",
-                        request_data
+                        request_data,
+                        client_ip
                     ):
                         yield chunk
                 except Exception as e:
@@ -88,7 +97,8 @@ async def completions(request: CompletionRequest):
             response = await gateway.route_request(
                 request.model,
                 "/v1/completions",
-                request_data
+                request_data,
+                client_ip
             )
             return response
             
