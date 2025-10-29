@@ -69,7 +69,8 @@ class OpenAIGateway:
                                     'host_id': host.id,
                                     'instance_id': instance['id'],
                                     'url': instance_url,
-                                    'api_key': instance_api_key
+                                    'api_key': instance_api_key,
+                                    'model_alias': alias
                                 })
                     else:
                         host_manager.update_host_status(host.id, HostStatus.ERROR)
@@ -126,6 +127,32 @@ class OpenAIGateway:
         
         return list(models_dict.values())
     
+    def _resolve_model_name(self, model: str) -> Optional[str]:
+        """Resolve partial model name to full model name
+        
+        Strategy:
+        1. First try exact match
+        2. If no exact match, try prefix match (e.g., "thinker-v3" matches "thinker-v3:30b")
+        3. If multiple prefix matches, return the first one (sorted alphabetically)
+        
+        Returns the resolved model name, or None if no match found
+        """
+        # Try exact match first
+        if model in self.model_to_hosts and self.model_to_hosts[model]:
+            return model
+        
+        # Try prefix match
+        matching_models = [
+            m for m in self.model_to_hosts.keys()
+            if m.startswith(model) and self.model_to_hosts[m]
+        ]
+        
+        if matching_models:
+            # Return first match (sorted alphabetically for consistency)
+            return sorted(matching_models)[0]
+        
+        return None
+    
     def _get_next_instance(self, model: str) -> Optional[Dict[str, Any]]:
         """Get next instance for a model using intelligent load balancing
         
@@ -134,10 +161,15 @@ class OpenAIGateway:
         2. If all busy, choose the least busy one
         3. Use round-robin as tiebreaker among equally busy instances
         """
-        if model not in self.model_to_hosts or not self.model_to_hosts[model]:
+        # Resolve partial model name to full model name
+        resolved_model = self._resolve_model_name(model)
+        if not resolved_model:
             return None
         
-        available_instances = self.model_to_hosts[model]
+        if resolved_model not in self.model_to_hosts or not self.model_to_hosts[resolved_model]:
+            return None
+        
+        available_instances = self.model_to_hosts[resolved_model]
         
         # Find the instance with minimum active requests
         min_requests = float('inf')
@@ -158,10 +190,10 @@ class OpenAIGateway:
             return best_instances[0]
         
         # Use round-robin among the least busy instances
-        if model in self.model_iterators:
+        if resolved_model in self.model_iterators:
             # Find the next instance in round-robin that's also in best_instances
             for _ in range(len(available_instances)):
-                candidate = next(self.model_iterators[model])
+                candidate = next(self.model_iterators[resolved_model])
                 if candidate in best_instances:
                     return candidate
         
@@ -230,6 +262,7 @@ class OpenAIGateway:
                 "data": {
                     "request_id": request_id,
                     "model": model,
+                    "resolved_model": instance['model_alias'],
                     "host_id": instance['host_id'],
                     "host_name": host_name,
                     "instance_id": instance['instance_id'],
@@ -367,6 +400,7 @@ class OpenAIGateway:
                 "data": {
                     "request_id": request_id,
                     "model": model,
+                    "resolved_model": instance['model_alias'],
                     "host_id": instance['host_id'],
                     "host_name": host_name,
                     "instance_id": instance['instance_id'],
