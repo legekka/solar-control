@@ -2,10 +2,64 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+import asyncio
 
 from app.config import settings
 from app.gateway import gateway
 from app.routes import hosts, openai, websockets
+from app.routes.websockets import broadcast_host_status
+
+
+async def refresh_hosts_periodically():
+    """Background task to refresh host statuses every 10 seconds"""
+    import aiohttp
+    from app.config import host_manager
+    from app.models import HostStatus
+    
+    while True:
+        try:
+            await asyncio.sleep(10)  # Check every 10 seconds
+            
+            hosts = host_manager.get_all_hosts()
+            if not hosts:
+                continue
+            
+            async with aiohttp.ClientSession() as session:
+                for host in hosts:
+                    old_status = host.status
+                    try:
+                        # Quick health check
+                        url = f"{host.url}/health"
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as response:
+                            if response.status == 200:
+                                # Verify API key works
+                                url = f"{host.url}/instances"
+                                headers = {"X-API-Key": host.api_key}
+                                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as inst_response:
+                                    if inst_response.status == 200:
+                                        host_manager.update_host_status(host.id, HostStatus.ONLINE)
+                                        new_status = "online"
+                                    else:
+                                        host_manager.update_host_status(host.id, HostStatus.ERROR)
+                                        new_status = "error"
+                            else:
+                                host_manager.update_host_status(host.id, HostStatus.ERROR)
+                                new_status = "error"
+                    except Exception:
+                        host_manager.update_host_status(host.id, HostStatus.OFFLINE)
+                        new_status = "offline"
+                    
+                    # Broadcast status change if different
+                    if old_status.value != new_status:
+                        await broadcast_host_status({
+                            "host_id": host.id,
+                            "name": host.name,
+                            "status": new_status,
+                            "url": host.url
+                        })
+        except Exception as e:
+            print(f"Error in host refresh task: {e}")
+            await asyncio.sleep(5)
 
 
 @asynccontextmanager
@@ -18,12 +72,21 @@ async def lifespan(app: FastAPI):
     # Refresh model registry
     await gateway.refresh_model_registry()
     print("Model registry initialized")
+    
+    # Start background task for host status monitoring
+    task = asyncio.create_task(refresh_hosts_periodically())
+    print("Host status monitoring started")
     print("Solar Control started successfully")
     
     yield
     
     # Shutdown
     print("Shutting down Solar Control...")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     await gateway.close()
     print("Solar Control shut down")
 

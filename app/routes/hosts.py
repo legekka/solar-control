@@ -148,6 +148,64 @@ async def refresh_host_status(host_id: str):
         )
 
 
+@router.post("/refresh-all")
+async def refresh_all_hosts():
+    """Refresh status for all registered hosts"""
+    from app.models import HostStatus
+    hosts = host_manager.get_all_hosts()
+    results = []
+    
+    async with aiohttp.ClientSession() as session:
+        for host in hosts:
+            try:
+                # Check health endpoint
+                url = f"{host.url}/health"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status != 200:
+                        host_manager.update_host_status(host.id, HostStatus.ERROR)
+                        results.append({
+                            "host_id": host.id,
+                            "name": host.name,
+                            "status": "error",
+                            "message": f"Health check failed with status {response.status}"
+                        })
+                        continue
+                
+                # Check instances endpoint with API key
+                url = f"{host.url}/instances"
+                headers = {"X-API-Key": host.api_key}
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        host_manager.update_host_status(host.id, HostStatus.ONLINE)
+                        results.append({
+                            "host_id": host.id,
+                            "name": host.name,
+                            "status": "online",
+                            "message": "Connected successfully"
+                        })
+                    else:
+                        host_manager.update_host_status(host.id, HostStatus.ERROR)
+                        results.append({
+                            "host_id": host.id,
+                            "name": host.name,
+                            "status": "error",
+                            "message": f"API authentication failed with status {response.status}"
+                        })
+            except Exception as e:
+                host_manager.update_host_status(host.id, HostStatus.OFFLINE)
+                results.append({
+                    "host_id": host.id,
+                    "name": host.name,
+                    "status": "offline",
+                    "message": f"Failed to connect: {str(e)}"
+                })
+    
+    return {
+        "message": f"Refreshed {len(hosts)} hosts",
+        "results": results
+    }
+
+
 @router.get("/{host_id}/instances")
 async def get_host_instances(host_id: str):
     """Get instances from a specific host"""
