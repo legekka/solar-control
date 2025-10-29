@@ -50,6 +50,10 @@ app.add_middleware(
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
     """Verify API key for all requests except health check and OpenAPI docs"""
+    # Allow CORS preflight requests (OPTIONS) without authentication
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    
     # Allow access to health check, docs, and OpenAPI schema
     public_paths = ["/health", "/", "/docs", "/redoc", "/openapi.json"]
     if request.url.path in public_paths:
