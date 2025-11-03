@@ -382,3 +382,26 @@ async def delete_instance(host_id: str, instance_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/{host_id}/instances/{instance_id}/state")
+async def get_instance_state(host_id: str, instance_id: str):
+    """Proxy runtime state snapshot for a specific instance on a host"""
+    host = host_manager.get_host(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{host.url}/instances/{instance_id}/state"
+            headers = {"X-API-Key": host.api_key}
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    text = await response.text()
+                    raise HTTPException(status_code=response.status, detail=f"Failed to get instance state: {text}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

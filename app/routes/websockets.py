@@ -167,3 +167,55 @@ async def proxy_instance_logs(websocket: WebSocket, host_id: str, instance_id: s
         except Exception:
             pass
 
+
+@router.websocket("/instances/{host_id}/{instance_id}/state")
+async def proxy_instance_state(websocket: WebSocket, host_id: str, instance_id: str):
+    """Proxy WebSocket connection to solar-host for instance runtime state"""
+    await websocket.accept()
+
+    host = host_manager.get_host(host_id)
+    if not host:
+        await websocket.send_json({"error": f"Host {host_id} not found"})
+        await websocket.close()
+        return
+
+    ws_url = f"{host.url.replace('http://', 'ws://').replace('https://', 'wss://')}/instances/{instance_id}/state"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"X-API-Key": host.api_key}
+            async with session.ws_connect(ws_url, headers=headers) as host_ws:
+                async def forward_to_client():
+                    try:
+                        async for msg in host_ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                await websocket.send_text(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.ERROR:
+                                break
+                    except Exception:
+                        pass
+
+                async def forward_to_host():
+                    try:
+                        while True:
+                            data = await websocket.receive_text()
+                            await host_ws.send_str(data)
+                    except WebSocketDisconnect:
+                        pass
+                    except Exception:
+                        pass
+
+                await asyncio.gather(
+                    forward_to_client(),
+                    forward_to_host(),
+                    return_exceptions=True
+                )
+    except aiohttp.ClientError as e:
+        await websocket.send_json({"error": f"Failed to connect to solar-host: {str(e)}"})
+    except Exception as e:
+        await websocket.send_json({"error": f"Proxy error: {str(e)}"})
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
