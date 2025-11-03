@@ -6,7 +6,8 @@ A coordinator for multiple solar-host instances with OpenAI-compatible API gatew
 
 - Manage multiple solar-host instances
 - OpenAI-compatible API gateway with model routing
-- Round-robin load balancing for duplicate model aliases
+- Model alias resolution (exact match; optional prefix fallback)
+- Host-aware, model-size-weighted load balancing (prefers free hosts; otherwise chooses lowest active parameter load; round-robin tiebreaker)
 - Transparent authentication handling
 - WebSocket log aggregation
 - Docker support

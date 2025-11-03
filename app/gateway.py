@@ -1,4 +1,5 @@
 import aiohttp
+import re
 import uuid
 import time
 from typing import Dict, List, Optional, Any
@@ -20,6 +21,10 @@ class OpenAIGateway:
         self.model_iterators: Dict[str, Any] = {}  # cycle objects don't have good type hints
         # Track active requests per instance (instance_id -> count)
         self.active_requests: Dict[str, int] = defaultdict(int)
+        # Track active requests per host (host_id -> count)
+        self.host_active_counts: Dict[str, int] = defaultdict(int)
+        # Track active parameter weight per host (host_id -> total "B" units)
+        self.host_active_weight: Dict[str, float] = defaultdict(float)
         self.session: Optional[aiohttp.ClientSession] = None
     
     async def _ensure_session(self):
@@ -36,6 +41,10 @@ class OpenAIGateway:
         """Refresh the model registry from all hosts"""
         await self._ensure_session()
         
+        # Guard for type-checkers; ensure we have a session
+        if not self.session:
+            return
+
         # Clear existing mappings
         self.model_to_hosts.clear()
         self.model_iterators.clear()
@@ -47,7 +56,8 @@ class OpenAIGateway:
                 url = f"{host.url}/instances"
                 headers = {"X-API-Key": host.api_key}
                 
-                async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                session = self.session
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status == 200:
                         instances = await response.json()
                         
@@ -153,13 +163,45 @@ class OpenAIGateway:
         
         return None
     
+    def _parse_model_size(self, alias: str) -> Optional[float]:
+        """Parse model size from alias suffix into B units (billions of params).
+
+        Examples:
+        - "gpt-oss:20b" -> 20.0
+        - "minimax-m2:230b" -> 230.0
+        - "mixtral:8x7b" -> 56.0 (8 * 7)
+        - "tiny:13m" -> 0.013
+
+        Returns None if size cannot be parsed.
+        """
+        try:
+            # Use the part after the last ':' as the size token, if present
+            size_token = alias.rsplit(':', 1)[-1] if ':' in alias else alias
+            # Pattern: optional multiplier (e.g., 8x), numeric value (int/float), and unit (b/m)
+            match = re.fullmatch(r"(?:(\d+)\s*x\s*)?(\d+(?:\.\d+)?)\s*([bBmM])", size_token)
+            if not match:
+                return None
+            multiplier_str, value_str, unit = match.groups()
+            multiplier = int(multiplier_str) if multiplier_str else 1
+            value = float(value_str)
+            unit_lower = unit.lower()
+            if unit_lower == 'b':
+                return multiplier * value
+            if unit_lower == 'm':
+                return multiplier * (value / 1000.0)
+            return None
+        except Exception:
+            return None
+
     def _get_next_instance(self, model: str) -> Optional[Dict[str, Any]]:
-        """Get next instance for a model using intelligent load balancing
-        
+        """Get next instance for a model using host-aware load balancing.
+
         Strategy:
-        1. Prefer instances with no active requests (free)
-        2. If all busy, choose the least busy one
-        3. Use round-robin as tiebreaker among equally busy instances
+        1. Prefer hosts with no active requests (any model). Choose an instance on a free host
+           using per-model round-robin as a tiebreaker; fallback to alphabetical host name.
+        2. If all candidate hosts are busy, choose the host with the smallest current active
+           parameter weight (sum of B units of in-flight models on that host). Ties break by
+           alphabetical host name, then per-model round-robin among instances on that host.
         """
         # Resolve partial model name to full model name
         resolved_model = self._resolve_model_name(model)
@@ -170,35 +212,85 @@ class OpenAIGateway:
             return None
         
         available_instances = self.model_to_hosts[resolved_model]
-        
-        # Find the instance with minimum active requests
-        min_requests = float('inf')
-        best_instances = []
-        
-        for instance in available_instances:
-            instance_key = f"{instance['host_id']}-{instance['instance_id']}"
-            active = self.active_requests.get(instance_key, 0)
-            
-            if active < min_requests:
-                min_requests = active
-                best_instances = [instance]
-            elif active == min_requests:
-                best_instances.append(instance)
-        
-        # If we have multiple instances with same load, use round-robin as tiebreaker
-        if len(best_instances) == 1:
-            return best_instances[0]
-        
-        # Use round-robin among the least busy instances
+
+        # Group candidate instances by host
+        host_to_instances: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for inst in available_instances:
+            host_to_instances[inst['host_id']].append(inst)
+
+        candidate_host_ids = list(host_to_instances.keys())
+        if not candidate_host_ids:
+            return None
+
+        # Step 1: Prefer hosts with zero active requests
+        free_hosts = [h for h in candidate_host_ids if self.host_active_counts.get(h, 0) == 0]
+        if free_hosts:
+            # Try per-model round-robin filtered to instances on free hosts
+            if resolved_model in self.model_iterators:
+                for _ in range(len(available_instances)):
+                    candidate = next(self.model_iterators[resolved_model])
+                    if candidate['host_id'] in free_hosts:
+                        return candidate
+            # Fallback: alphabetical host name
+            def host_name(hid: str) -> str:
+                h = host_manager.get_host(hid)
+                return h.name if h and h.name else hid
+            chosen_host = sorted(free_hosts, key=host_name)[0]
+            # Within chosen host, pick least instance-active; rr as final tiebreaker
+            host_insts = host_to_instances[chosen_host]
+            min_inst_active = float('inf')
+            best_insts: List[Dict[str, Any]] = []
+            for inst in host_insts:
+                ikey = f"{inst['host_id']}-{inst['instance_id']}"
+                iactive = self.active_requests.get(ikey, 0)
+                if iactive < min_inst_active:
+                    min_inst_active = iactive
+                    best_insts = [inst]
+                elif iactive == min_inst_active:
+                    best_insts.append(inst)
+            if len(best_insts) == 1:
+                return best_insts[0]
+            if resolved_model in self.model_iterators:
+                for _ in range(len(available_instances)):
+                    candidate = next(self.model_iterators[resolved_model])
+                    if candidate in best_insts:
+                        return candidate
+            return best_insts[0]
+
+        # Step 2: All hosts are busy - choose host with smallest active weight
+        # Build weight map for candidate hosts
+        host_weights = {hid: float(self.host_active_weight.get(hid, 0.0)) for hid in candidate_host_ids}
+
+        # Determine minimal weight hosts
+        min_weight = min(host_weights.values()) if host_weights else 0.0
+        min_weight_hosts = [hid for hid, w in host_weights.items() if w == min_weight]
+
+        # Tie-break by alphabetical host name
+        def host_name(hid: str) -> str:
+            h = host_manager.get_host(hid)
+            return h.name if h and h.name else hid
+        chosen_host = sorted(min_weight_hosts, key=host_name)[0]
+
+        # Within chosen host, pick the least instance-active; rr as final tiebreaker
+        host_insts = host_to_instances[chosen_host]
+        min_inst_active = float('inf')
+        best_insts_busy: List[Dict[str, Any]] = []
+        for inst in host_insts:
+            ikey = f"{inst['host_id']}-{inst['instance_id']}"
+            iactive = self.active_requests.get(ikey, 0)
+            if iactive < min_inst_active:
+                min_inst_active = iactive
+                best_insts_busy = [inst]
+            elif iactive == min_inst_active:
+                best_insts_busy.append(inst)
+        if len(best_insts_busy) == 1:
+            return best_insts_busy[0]
         if resolved_model in self.model_iterators:
-            # Find the next instance in round-robin that's also in best_instances
             for _ in range(len(available_instances)):
                 candidate = next(self.model_iterators[resolved_model])
-                if candidate in best_instances:
+                if candidate in best_insts_busy:
                     return candidate
-        
-        # Fallback: return first best instance
-        return best_instances[0]
+        return best_insts_busy[0]
     
     async def route_request(self, model: str, endpoint: str, data: Dict[str, Any], client_ip: str = "unknown") -> Dict[str, Any]:
         """Route a request to the appropriate instance"""
@@ -247,9 +339,14 @@ class OpenAIGateway:
             })
             raise ValueError(error_msg)
         
-        # Track this request as active
+        # Track this request as active (instance + host)
         instance_key = f"{instance['host_id']}-{instance['instance_id']}"
         self.active_requests[instance_key] += 1
+        host_id_for_request = instance['host_id']
+        weight_for_request = self._parse_model_size(instance['model_alias'])
+        self.host_active_counts[host_id_for_request] += 1
+        if weight_for_request is not None:
+            self.host_active_weight[host_id_for_request] = self.host_active_weight.get(host_id_for_request, 0.0) + float(weight_for_request)
         
         # Get host name
         host = host_manager.get_host(instance['host_id'])
@@ -336,6 +433,12 @@ class OpenAIGateway:
         finally:
             # Always decrement active requests count
             self.active_requests[instance_key] = max(0, self.active_requests[instance_key] - 1)
+            try:
+                self.host_active_counts[host_id_for_request] = max(0, self.host_active_counts[host_id_for_request] - 1)
+                if weight_for_request is not None:
+                    self.host_active_weight[host_id_for_request] = max(0.0, self.host_active_weight[host_id_for_request] - float(weight_for_request))
+            except Exception:
+                pass
     
     async def stream_request(self, model: str, endpoint: str, data: Dict[str, Any], client_ip: str = "unknown"):
         """Stream a request to the appropriate instance"""
@@ -385,9 +488,14 @@ class OpenAIGateway:
             })
             raise ValueError(error_msg)
         
-        # Track this request as active
+        # Track this request as active (instance + host)
         instance_key = f"{instance['host_id']}-{instance['instance_id']}"
         self.active_requests[instance_key] += 1
+        host_id_for_request = instance['host_id']
+        weight_for_request = self._parse_model_size(instance['model_alias'])
+        self.host_active_counts[host_id_for_request] += 1
+        if weight_for_request is not None:
+            self.host_active_weight[host_id_for_request] = self.host_active_weight.get(host_id_for_request, 0.0) + float(weight_for_request)
         
         # Get host name
         host = host_manager.get_host(instance['host_id'])
@@ -473,6 +581,12 @@ class OpenAIGateway:
         finally:
             # Always decrement active requests count
             self.active_requests[instance_key] = max(0, self.active_requests[instance_key] - 1)
+            try:
+                self.host_active_counts[host_id_for_request] = max(0, self.host_active_counts[host_id_for_request] - 1)
+                if weight_for_request is not None:
+                    self.host_active_weight[host_id_for_request] = max(0.0, self.host_active_weight[host_id_for_request] - float(weight_for_request))
+            except Exception:
+                pass
 
 
 # Global gateway instance
