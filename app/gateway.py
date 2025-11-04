@@ -195,6 +195,52 @@ class OpenAIGateway:
         except Exception:
             return False
     
+    # -------------------------
+    # Usage enrichment helpers
+    # -------------------------
+    def _extract_usage_from_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        usage = result.get('usage') if isinstance(result, dict) else None
+        if not isinstance(usage, dict):
+            return {}
+        out: Dict[str, Any] = {}
+        if isinstance(usage.get('prompt_tokens'), (int, float)):
+            out['prompt_tokens'] = int(usage['prompt_tokens'])
+        if isinstance(usage.get('completion_tokens'), (int, float)):
+            out['completion_tokens'] = int(usage['completion_tokens'])
+        if isinstance(usage.get('total_tokens'), (int, float)):
+            out['total_tokens'] = int(usage['total_tokens'])
+        return out
+
+    async def _fetch_last_generation_metrics(self, host_id: str, instance_id: str) -> Dict[str, Any]:
+        try:
+            await self._ensure_session()
+            if not self.session:
+                return {}
+            host = host_manager.get_host(host_id)
+            if not host:
+                return {}
+            url = f"{host.url}/instances/{instance_id}/last-generation"
+            headers = {"X-API-Key": host.api_key}
+            timeout = aiohttp.ClientTimeout(total=3)
+            async with self.session.get(url, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return {}
+                data = await resp.json()
+                out: Dict[str, Any] = {}
+                if isinstance(data.get('prompt_tokens'), (int, float)):
+                    out['prompt_tokens'] = int(data['prompt_tokens'])
+                if isinstance(data.get('generated_tokens'), (int, float)):
+                    out['completion_tokens'] = int(data['generated_tokens'])
+                if 'prompt_tokens' in out and 'completion_tokens' in out:
+                    out['total_tokens'] = int(out['prompt_tokens']) + int(out['completion_tokens'])
+                if isinstance(data.get('decode_tps'), (int, float)):
+                    out['decode_tps'] = float(data['decode_tps'])
+                if isinstance(data.get('decode_ms_per_token'), (int, float)):
+                    out['decode_ms_per_token'] = float(data['decode_ms_per_token'])
+                return out
+        except Exception:
+            return {}
+    
     async def get_available_models(self) -> List[Dict[str, Any]]:
         """Get list of all available models with full metadata from llama.cpp servers"""
         await self.refresh_model_registry()
@@ -514,18 +560,29 @@ class OpenAIGateway:
                         result = await response.json()
                         duration = time.time() - start_time
 
-                        # Emit success event
-                        await broadcast_routing_event({
+                        # Try to enrich with token usage
+                        usage_fields = self._extract_usage_from_result(result)
+                        if 'prompt_tokens' not in usage_fields or 'completion_tokens' not in usage_fields:
+                            # fallback to host metrics
+                            host_metrics = await self._fetch_last_generation_metrics(instance['host_id'], instance['instance_id'])
+                            # host metrics keys already mapped partially
+                            usage_fields = {**usage_fields, **host_metrics}
+
+                        # Emit success event (with optional usage fields)
+                        base_data = {
+                            "request_id": request_id,
+                            "model": model,
+                            "host_id": instance['host_id'],
+                            "instance_id": instance['instance_id'],
+                            "duration": duration,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                        base_data.update(usage_fields)
+                        event_payload = {
                             "type": "request_success",
-                            "data": {
-                                "request_id": request_id,
-                                "model": model,
-                                "host_id": instance['host_id'],
-                                "instance_id": instance['instance_id'],
-                                "duration": duration,
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            }
-                        })
+                            "data": base_data,
+                        }
+                        await broadcast_routing_event(event_payload)
 
                         return result
                     else:
@@ -687,18 +744,21 @@ class OpenAIGateway:
                         async for line in response.content:
                             yield line
 
-                        # Emit success event after stream completes
+                        # Emit success event after stream completes (try to enrich with host metrics)
                         duration = time.time() - start_time
+                        usage_fields = await self._fetch_last_generation_metrics(instance['host_id'], instance['instance_id'])
+                        base_data = {
+                            "request_id": request_id,
+                            "model": model,
+                            "host_id": instance['host_id'],
+                            "instance_id": instance['instance_id'],
+                            "duration": duration,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        base_data.update(usage_fields)
                         await broadcast_routing_event({
                             "type": "request_success",
-                            "data": {
-                                "request_id": request_id,
-                                "model": model,
-                                "host_id": instance['host_id'],
-                                "instance_id": instance['instance_id'],
-                                "duration": duration,
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            }
+                            "data": base_data,
                         })
                         return
                     else:

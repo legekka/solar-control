@@ -62,6 +62,12 @@ class RequestSummary:
     instance_id: Optional[str]
     instance_url: Optional[str]
     error_message: Optional[str] = None
+    # Token usage and decode metrics (optional)
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    decode_tps: Optional[float] = None
+    decode_ms_per_token: Optional[float] = None
 
 
 class GatewayEventLogger:
@@ -179,6 +185,19 @@ class GatewayEventLogger:
                 end_ts = data.get('timestamp') or event.get('timestamp') or _utc_now_iso()
                 duration = data.get('duration')
                 status = 'success' if etype == 'request_success' else self._classify_error_status(data.get('error_message'))
+                # Optional usage fields from success payload
+                p_tok = data.get('prompt_tokens') if isinstance(data.get('prompt_tokens'), (int, float)) else None
+                c_tok = data.get('completion_tokens') if isinstance(data.get('completion_tokens'), (int, float)) else None
+                t_tok = data.get('total_tokens') if isinstance(data.get('total_tokens'), (int, float)) else None
+                if t_tok is None and p_tok is not None and c_tok is not None:
+                    try:
+                        t_tok = int(p_tok) + int(c_tok)
+                    except Exception:
+                        t_tok = None
+                _dt = data.get('decode_tps')
+                decode_tps = float(_dt) if isinstance(_dt, (int, float)) else None
+                _dmpt = data.get('decode_ms_per_token')
+                decode_ms_per_token = float(_dmpt) if isinstance(_dmpt, (int, float)) else None
                 summary = RequestSummary(
                     request_id=request_id,
                     status=status,
@@ -196,6 +215,11 @@ class GatewayEventLogger:
                     instance_id=rip.last_route_instance_id,
                     instance_url=rip.last_route_instance_url,
                     error_message=data.get('error_message'),
+                    prompt_tokens=int(p_tok) if p_tok is not None else None,
+                    completion_tokens=int(c_tok) if c_tok is not None else None,
+                    total_tokens=int(t_tok) if t_tok is not None else None,
+                    decode_tps=decode_tps,
+                    decode_ms_per_token=decode_ms_per_token,
                 )
                 try:
                     self._queue.put_nowait({'kind': 'summary', 'ts': end_ts, 'data': asdict(summary)})
@@ -241,10 +265,11 @@ class GatewayEventLogger:
         try:
             while True:
                 item = await self._queue.get()
-                kind = item.get('kind')
+                kind_val = item.get('kind')
                 ts = item.get('ts') or _utc_now_iso()
                 date_str = _date_str_from_iso(ts)
                 try:
+                    kind: str = 'event' if kind_val == 'event' else 'summary'
                     ensure_open(date_str, kind)
                     f = open_files[date_str][kind]
                     line = json.dumps(item['data'], ensure_ascii=False)

@@ -94,6 +94,83 @@ async def get_stats(
         reroutes = _load_jsonl_filtered(evt_paths, reroute_pred)
         rerouted_unique = len({(e.get('data') or {}).get('request_id') for e in reroutes if (e.get('data') or {}).get('request_id')})
 
+        # Token aggregates (success only)
+        succ = [s for s in summaries if s.get('status') == 'success']
+        p_vals: List[int] = []
+        c_vals: List[int] = []
+        for s in succ:
+            pv = s.get('prompt_tokens')
+            if isinstance(pv, (int, float)):
+                p_vals.append(int(pv))
+            cv = s.get('completion_tokens')
+            if isinstance(cv, (int, float)):
+                c_vals.append(int(cv))
+        token_in_total = int(sum(p_vals)) if p_vals else 0
+        token_out_total = int(sum(c_vals)) if c_vals else 0
+        avg_tokens_in = (token_in_total / len(p_vals)) if p_vals else 0
+        avg_tokens_out = (token_out_total / len(c_vals)) if c_vals else 0
+
+        # Per-model breakdown
+        by_model: Dict[str, Dict[str, Any]] = {}
+        for s in succ:
+            model_key = s.get('resolved_model') or s.get('model') or 'unknown'
+            rec = by_model.setdefault(model_key, {
+                'model': model_key,
+                'completed': 0,
+                'token_in': 0,
+                'token_out': 0,
+                'dur_sum': 0.0,
+            })
+            rec['completed'] += 1
+            if isinstance(s.get('prompt_tokens'), (int, float)):
+                rec['token_in'] += int(s['prompt_tokens'])
+            if isinstance(s.get('completion_tokens'), (int, float)):
+                rec['token_out'] += int(s['completion_tokens'])
+            if isinstance(s.get('duration_s'), (int, float)):
+                rec['dur_sum'] += float(s['duration_s'])
+        model_rows = [
+            {
+                'model': k,
+                'completed': v['completed'],
+                'token_in': v['token_in'],
+                'token_out': v['token_out'],
+                'avg_duration_s': (v['dur_sum'] / v['completed']) if v['completed'] else 0.0,
+            }
+            for k, v in by_model.items()
+        ]
+
+        # Per-host breakdown
+        by_host: Dict[str, Dict[str, Any]] = {}
+        for s in succ:
+            hid = s.get('host_id') or 'unknown'
+            rec = by_host.setdefault(hid, {
+                'host_id': hid,
+                'host_name': s.get('host_name'),
+                'completed': 0,
+                'token_in': 0,
+                'token_out': 0,
+                'dur_sum': 0.0,
+            })
+            rec['host_name'] = s.get('host_name') or rec.get('host_name')
+            rec['completed'] += 1
+            if isinstance(s.get('prompt_tokens'), (int, float)):
+                rec['token_in'] += int(s['prompt_tokens'])
+            if isinstance(s.get('completion_tokens'), (int, float)):
+                rec['token_out'] += int(s['completion_tokens'])
+            if isinstance(s.get('duration_s'), (int, float)):
+                rec['dur_sum'] += float(s['duration_s'])
+        host_rows = [
+            {
+                'host_id': k,
+                'host_name': v.get('host_name'),
+                'completed': v['completed'],
+                'token_in': v['token_in'],
+                'token_out': v['token_out'],
+                'avg_duration_s': (v['dur_sum'] / v['completed']) if v['completed'] else 0.0,
+            }
+            for k, v in by_host.items()
+        ]
+
         return {
             'from': start.isoformat(),
             'to': end.isoformat(),
@@ -101,6 +178,12 @@ async def get_stats(
             'missed': missed,
             'error': error,
             'rerouted_requests': rerouted_unique,
+            'token_in_total': token_in_total,
+            'token_out_total': token_out_total,
+            'avg_tokens_in': avg_tokens_in,
+            'avg_tokens_out': avg_tokens_out,
+            'models': model_rows,
+            'hosts': host_rows,
         }
 
     result = await asyncio.to_thread(compute)
