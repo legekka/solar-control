@@ -6,7 +6,9 @@ import asyncio
 
 from app.config import settings
 from app.gateway import gateway
+from app.gateway_logs import event_logger
 from app.routes import hosts, openai, websockets
+from app.routes import gateway as gateway_routes
 from app.routes.websockets import broadcast_host_status
 
 
@@ -89,6 +91,12 @@ async def lifespan(app: FastAPI):
     # Start gateway background tasks (registry refresh + health probes)
     await gateway.start_background_tasks()
     print("Gateway background tasks started")
+    # Start gateway event logger
+    try:
+        await event_logger.start()
+        print("Gateway event logger started")
+    except Exception as e:
+        print(f"Failed to start gateway event logger: {e}")
     
     # Start background task for host status monitoring
     task = asyncio.create_task(refresh_hosts_periodically())
@@ -109,6 +117,11 @@ async def lifespan(app: FastAPI):
         await gateway.stop_background_tasks()
     finally:
         await gateway.close()
+    # Stop event logger
+    try:
+        await event_logger.stop()
+    except Exception:
+        pass
     print("Solar Control shut down")
 
 
@@ -182,6 +195,7 @@ async def verify_api_key(request: Request, call_next):
 app.include_router(hosts.router)
 app.include_router(openai.router)
 app.include_router(websockets.router, prefix="/ws")
+app.include_router(gateway_routes.router)
 
 
 # Customize OpenAPI schema to add security

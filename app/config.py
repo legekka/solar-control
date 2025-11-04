@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Health probe mode (default: TCP connect only)
     health_probe_use_http: bool = False
     health_probe_http_path: str = "/v1/models"
+    # Gateway event logging
+    gateway_log_dir: str = "data/gateway-logs"
+    gateway_log_retention_days: int = 365
     
     class Config:
         env_file = ".env"

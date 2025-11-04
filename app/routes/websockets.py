@@ -46,6 +46,13 @@ async def broadcast_host_status(status_update: dict):
 async def broadcast_routing_event(event_data: dict):
     """Broadcast routing events to all connected clients"""
     await routing_manager.broadcast(event_data)
+    # Also persist the event to gateway logs
+    try:
+        from app.gateway_logs import event_logger
+        await event_logger.on_event(event_data)
+    except Exception:
+        # Never let logging failures impact routing broadcasts
+        pass
 
 
 @router.websocket("/status")
