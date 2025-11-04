@@ -12,6 +12,16 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     hosts_file: str = "data/hosts.json"  # Store in data directory
+    # Gateway routing/health tuning
+    registry_refresh_interval_s: float = 2.0
+    health_check_interval_s: float = 1.0
+    health_ttl_s: float = 3.0
+    health_cooldown_s: float = 5.0
+    route_connect_timeout_s: float = 0.5
+    route_max_attempts: int = 3
+    # Health probe mode (default: TCP connect only)
+    health_probe_use_http: bool = False
+    health_probe_http_path: str = "/v1/models"
     
     class Config:
         env_file = ".env"

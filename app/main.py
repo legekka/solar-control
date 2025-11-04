@@ -51,7 +51,7 @@ async def refresh_hosts_periodically():
                                                     # Update host with memory data
                                                     from app.models import MemoryInfo
                                                     host.memory = MemoryInfo(**memory_data)
-                                                    host_manager.save_hosts()
+                                                    host_manager.save()
                                         except Exception:
                                             # Memory fetch failed, but host is still online
                                             pass
@@ -86,9 +86,9 @@ async def lifespan(app: FastAPI):
     print("Starting Solar Control...")
     print(f"Gateway API Key configured: {settings.api_key[:4]}...")
     
-    # Refresh model registry
-    await gateway.refresh_model_registry()
-    print("Model registry initialized")
+    # Start gateway background tasks (registry refresh + health probes)
+    await gateway.start_background_tasks()
+    print("Gateway background tasks started")
     
     # Start background task for host status monitoring
     task = asyncio.create_task(refresh_hosts_periodically())
@@ -104,7 +104,11 @@ async def lifespan(app: FastAPI):
         await task
     except asyncio.CancelledError:
         pass
-    await gateway.close()
+    # Stop gateway background tasks and close session
+    try:
+        await gateway.stop_background_tasks()
+    finally:
+        await gateway.close()
     print("Solar Control shut down")
 
 
