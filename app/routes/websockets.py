@@ -8,6 +8,7 @@ from app.config import host_manager
 
 router = APIRouter(tags=["websockets"])
 
+
 # Connection manager for status updates
 class ConnectionManager:
     def __init__(self):
@@ -28,20 +29,20 @@ class ConnectionManager:
                 await connection.send_json(message)
             except Exception:
                 disconnected.append(connection)
-        
+
         # Clean up disconnected clients
         for conn in disconnected:
             self.disconnect(conn)
 
+
 manager = ConnectionManager()
 routing_manager = ConnectionManager()
 
+
 async def broadcast_host_status(status_update: dict):
     """Broadcast host status updates to all connected clients"""
-    await manager.broadcast({
-        "type": "host_status",
-        "data": status_update
-    })
+    await manager.broadcast({"type": "host_status", "data": status_update})
+
 
 async def broadcast_routing_event(event_data: dict):
     """Broadcast routing events to all connected clients"""
@@ -49,6 +50,7 @@ async def broadcast_routing_event(event_data: dict):
     # Also persist the event to gateway logs
     try:
         from app.gateway_logs import event_logger
+
         await event_logger.on_event(event_data)
     except Exception:
         # Never let logging failures impact routing broadcasts
@@ -59,21 +61,28 @@ async def broadcast_routing_event(event_data: dict):
 async def status_updates(websocket: WebSocket):
     """WebSocket endpoint for real-time host status updates"""
     await manager.connect(websocket)
-    
+
     try:
         # Send current status of all hosts immediately
         hosts = host_manager.get_all_hosts()
-        await websocket.send_json({
-            "type": "initial_status",
-            "data": [{
-                "host_id": host.id,
-                "name": host.name,
-                "status": host.status.value,
-                "url": host.url,
-                "last_seen": host.last_seen.isoformat() if host.last_seen else None
-            } for host in hosts]
-        })
-        
+        await websocket.send_json(
+            {
+                "type": "initial_status",
+                "data": [
+                    {
+                        "host_id": host.id,
+                        "name": host.name,
+                        "status": host.status.value,
+                        "url": host.url,
+                        "last_seen": (
+                            host.last_seen.isoformat() if host.last_seen else None
+                        ),
+                    }
+                    for host in hosts
+                ],
+            }
+        )
+
         # Keep connection alive and wait for disconnect
         while True:
             # Receive ping/pong to keep connection alive
@@ -95,7 +104,7 @@ async def status_updates(websocket: WebSocket):
 async def routing_updates(websocket: WebSocket):
     """WebSocket endpoint for real-time routing events"""
     await routing_manager.connect(websocket)
-    
+
     try:
         # Keep connection alive and wait for disconnect
         while True:
@@ -118,17 +127,17 @@ async def routing_updates(websocket: WebSocket):
 async def proxy_instance_logs(websocket: WebSocket, host_id: str, instance_id: str):
     """Proxy WebSocket connection to solar-host for instance logs"""
     await websocket.accept()
-    
+
     # Get the host
     host = host_manager.get_host(host_id)
     if not host:
         await websocket.send_json({"error": f"Host {host_id} not found"})
         await websocket.close()
         return
-    
+
     # Build WebSocket URL to solar-host
     ws_url = f"{host.url.replace('http://', 'ws://').replace('https://', 'wss://')}/instances/{instance_id}/logs"
-    
+
     try:
         # Connect to solar-host WebSocket
         async with aiohttp.ClientSession() as session:
@@ -145,7 +154,7 @@ async def proxy_instance_logs(websocket: WebSocket, host_id: str, instance_id: s
                                 break
                     except Exception:
                         pass
-                
+
                 async def forward_to_host():
                     """Forward messages from client to solar-host"""
                     try:
@@ -156,16 +165,16 @@ async def proxy_instance_logs(websocket: WebSocket, host_id: str, instance_id: s
                         pass
                     except Exception:
                         pass
-                
+
                 # Run both directions concurrently
                 await asyncio.gather(
-                    forward_to_client(),
-                    forward_to_host(),
-                    return_exceptions=True
+                    forward_to_client(), forward_to_host(), return_exceptions=True
                 )
-                
+
     except aiohttp.ClientError as e:
-        await websocket.send_json({"error": f"Failed to connect to solar-host: {str(e)}"})
+        await websocket.send_json(
+            {"error": f"Failed to connect to solar-host: {str(e)}"}
+        )
     except Exception as e:
         await websocket.send_json({"error": f"Proxy error: {str(e)}"})
     finally:
@@ -192,6 +201,7 @@ async def proxy_instance_state(websocket: WebSocket, host_id: str, instance_id: 
         async with aiohttp.ClientSession() as session:
             headers = {"X-API-Key": host.api_key}
             async with session.ws_connect(ws_url, headers=headers) as host_ws:
+
                 async def forward_to_client():
                     try:
                         async for msg in host_ws:
@@ -213,12 +223,12 @@ async def proxy_instance_state(websocket: WebSocket, host_id: str, instance_id: 
                         pass
 
                 await asyncio.gather(
-                    forward_to_client(),
-                    forward_to_host(),
-                    return_exceptions=True
+                    forward_to_client(), forward_to_host(), return_exceptions=True
                 )
     except aiohttp.ClientError as e:
-        await websocket.send_json({"error": f"Failed to connect to solar-host: {str(e)}"})
+        await websocket.send_json(
+            {"error": f"Failed to connect to solar-host: {str(e)}"}
+        )
     except Exception as e:
         await websocket.send_json({"error": f"Proxy error: {str(e)}"})
     finally:

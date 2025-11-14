@@ -18,47 +18,46 @@ async def register_host(data: HostCreate):
         async with aiohttp.ClientSession() as session:
             try:
                 url = f"{data.url}/health"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
                     if response.status != 200:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"Cannot connect to host at {data.url}"
+                            detail=f"Cannot connect to host at {data.url}",
                         )
             except Exception as e:
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot connect to host: {str(e)}"
+                    status_code=400, detail=f"Cannot connect to host: {str(e)}"
                 )
-        
+
         # Create host
         host_id = str(uuid.uuid4())
-        host = Host(
-            id=host_id,
-            name=data.name,
-            url=data.url,
-            api_key=data.api_key
-        )
-        
+        host = Host(id=host_id, name=data.name, url=data.url, api_key=data.api_key)
+
         # Check if we can reach the instances endpoint with the API key
         try:
             async with aiohttp.ClientSession() as session:
                 url = f"{data.url}/instances"
                 headers = {"X-API-Key": data.api_key}
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                async with session.get(
+                    url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
                     if response.status == 200:
                         from app.models import HostStatus
+
                         host.status = HostStatus.ONLINE
                         from datetime import datetime, timezone
+
                         host.last_seen = datetime.now(timezone.utc)
         except Exception as e:
             print(f"Warning: Could not verify host API key: {e}")
             # Still register the host, but it will stay offline
-        
+
         host_manager.add_host(host)
-        
+
         return HostResponse(
-            host=host,
-            message=f"Host '{data.name}' registered successfully"
+            host=host, message=f"Host '{data.name}' registered successfully"
         )
     except HTTPException:
         raise
@@ -87,13 +86,10 @@ async def remove_host(host_id: str):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     host_manager.remove_host(host_id)
-    
-    return HostResponse(
-        host=host,
-        message=f"Host '{host.name}' removed successfully"
-    )
+
+    return HostResponse(host=host, message=f"Host '{host.name}' removed successfully")
 
 
 @router.post("/{host_id}/refresh", response_model=HostResponse)
@@ -102,49 +98,58 @@ async def refresh_host_status(host_id: str):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         # Check health endpoint
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/health"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
                 if response.status != 200:
                     from app.models import HostStatus
+
                     host_manager.update_host_status(host_id, HostStatus.ERROR)
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Health check failed with status {response.status}"
+                        detail=f"Health check failed with status {response.status}",
                     )
-            
+
             # Check instances endpoint with API key
             url = f"{host.url}/instances"
             headers = {"X-API-Key": host.api_key}
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
                 if response.status == 200:
                     from app.models import HostStatus
+
                     host_manager.update_host_status(host_id, HostStatus.ONLINE)
                     host = host_manager.get_host(host_id)  # Get updated host
                     if not host:
-                        raise HTTPException(status_code=404, detail="Host not found after update")
+                        raise HTTPException(
+                            status_code=404, detail="Host not found after update"
+                        )
                     return HostResponse(
                         host=host,
-                        message=f"Host '{host.name}' is online and responding"
+                        message=f"Host '{host.name}' is online and responding",
                     )
                 else:
                     from app.models import HostStatus
+
                     host_manager.update_host_status(host_id, HostStatus.ERROR)
                     raise HTTPException(
                         status_code=400,
-                        detail=f"API authentication failed with status {response.status}"
+                        detail=f"API authentication failed with status {response.status}",
                     )
     except HTTPException:
         raise
     except Exception as e:
         from app.models import HostStatus
+
         host_manager.update_host_status(host_id, HostStatus.OFFLINE)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to connect to host: {str(e)}"
+            status_code=500, detail=f"Failed to connect to host: {str(e)}"
         )
 
 
@@ -152,58 +157,68 @@ async def refresh_host_status(host_id: str):
 async def refresh_all_hosts():
     """Refresh status for all registered hosts"""
     from app.models import HostStatus
+
     hosts = host_manager.get_all_hosts()
     results = []
-    
+
     async with aiohttp.ClientSession() as session:
         for host in hosts:
             try:
                 # Check health endpoint
                 url = f"{host.url}/health"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
                     if response.status != 200:
                         host_manager.update_host_status(host.id, HostStatus.ERROR)
-                        results.append({
-                            "host_id": host.id,
-                            "name": host.name,
-                            "status": "error",
-                            "message": f"Health check failed with status {response.status}"
-                        })
+                        results.append(
+                            {
+                                "host_id": host.id,
+                                "name": host.name,
+                                "status": "error",
+                                "message": f"Health check failed with status {response.status}",
+                            }
+                        )
                         continue
-                
+
                 # Check instances endpoint with API key
                 url = f"{host.url}/instances"
                 headers = {"X-API-Key": host.api_key}
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                async with session.get(
+                    url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
                     if response.status == 200:
                         host_manager.update_host_status(host.id, HostStatus.ONLINE)
-                        results.append({
-                            "host_id": host.id,
-                            "name": host.name,
-                            "status": "online",
-                            "message": "Connected successfully"
-                        })
+                        results.append(
+                            {
+                                "host_id": host.id,
+                                "name": host.name,
+                                "status": "online",
+                                "message": "Connected successfully",
+                            }
+                        )
                     else:
                         host_manager.update_host_status(host.id, HostStatus.ERROR)
-                        results.append({
-                            "host_id": host.id,
-                            "name": host.name,
-                            "status": "error",
-                            "message": f"API authentication failed with status {response.status}"
-                        })
+                        results.append(
+                            {
+                                "host_id": host.id,
+                                "name": host.name,
+                                "status": "error",
+                                "message": f"API authentication failed with status {response.status}",
+                            }
+                        )
             except Exception as e:
                 host_manager.update_host_status(host.id, HostStatus.OFFLINE)
-                results.append({
-                    "host_id": host.id,
-                    "name": host.name,
-                    "status": "offline",
-                    "message": f"Failed to connect: {str(e)}"
-                })
-    
-    return {
-        "message": f"Refreshed {len(hosts)} hosts",
-        "results": results
-    }
+                results.append(
+                    {
+                        "host_id": host.id,
+                        "name": host.name,
+                        "status": "offline",
+                        "message": f"Failed to connect: {str(e)}",
+                    }
+                )
+
+    return {"message": f"Refreshed {len(hosts)} hosts", "results": results}
 
 
 @router.get("/{host_id}/instances")
@@ -212,19 +227,21 @@ async def get_host_instances(host_id: str):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances"
             headers = {"X-API-Key": host.api_key}
-            
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     raise HTTPException(
                         status_code=response.status,
-                        detail="Failed to get instances from host"
+                        detail="Failed to get instances from host",
                     )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -236,19 +253,20 @@ async def start_instance(host_id: str, instance_id: str):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances/{instance_id}/start"
             headers = {"X-API-Key": host.api_key}
-            
-            async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
+
+            async with session.post(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     raise HTTPException(
-                        status_code=response.status,
-                        detail="Failed to start instance"
+                        status_code=response.status, detail="Failed to start instance"
                     )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -260,19 +278,20 @@ async def stop_instance(host_id: str, instance_id: str):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances/{instance_id}/stop"
             headers = {"X-API-Key": host.api_key}
-            
-            async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
+
+            async with session.post(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     raise HTTPException(
-                        status_code=response.status,
-                        detail="Failed to stop instance"
+                        status_code=response.status, detail="Failed to stop instance"
                     )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -284,19 +303,20 @@ async def restart_instance(host_id: str, instance_id: str):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances/{instance_id}/restart"
             headers = {"X-API-Key": host.api_key}
-            
-            async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as response:
+
+            async with session.post(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     raise HTTPException(
-                        status_code=response.status,
-                        detail="Failed to restart instance"
+                        status_code=response.status, detail="Failed to restart instance"
                     )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -308,20 +328,25 @@ async def create_instance(host_id: str, instance_data: dict):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances"
             headers = {"X-API-Key": host.api_key, "Content-Type": "application/json"}
-            
-            async with session.post(url, json=instance_data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+
+            async with session.post(
+                url,
+                json=instance_data,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     error_text = await response.text()
                     raise HTTPException(
                         status_code=response.status,
-                        detail=f"Failed to create instance: {error_text}"
+                        detail=f"Failed to create instance: {error_text}",
                     )
     except HTTPException:
         raise
@@ -335,20 +360,25 @@ async def update_instance(host_id: str, instance_id: str, instance_data: dict):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances/{instance_id}"
             headers = {"X-API-Key": host.api_key, "Content-Type": "application/json"}
-            
-            async with session.put(url, json=instance_data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+
+            async with session.put(
+                url,
+                json=instance_data,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     error_text = await response.text()
                     raise HTTPException(
                         status_code=response.status,
-                        detail=f"Failed to update instance: {error_text}"
+                        detail=f"Failed to update instance: {error_text}",
                     )
     except HTTPException:
         raise
@@ -362,20 +392,22 @@ async def delete_instance(host_id: str, instance_id: str):
     host = host_manager.get_host(host_id)
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances/{instance_id}"
             headers = {"X-API-Key": host.api_key}
-            
-            async with session.delete(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+
+            async with session.delete(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     error_text = await response.text()
                     raise HTTPException(
                         status_code=response.status,
-                        detail=f"Failed to delete instance: {error_text}"
+                        detail=f"Failed to delete instance: {error_text}",
                     )
     except HTTPException:
         raise
@@ -394,14 +426,18 @@ async def get_instance_state(host_id: str, instance_id: str):
         async with aiohttp.ClientSession() as session:
             url = f"{host.url}/instances/{instance_id}/state"
             headers = {"X-API-Key": host.api_key}
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
                 if response.status == 200:
                     return await response.json()
                 else:
                     text = await response.text()
-                    raise HTTPException(status_code=response.status, detail=f"Failed to get instance state: {text}")
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=f"Failed to get instance state: {text}",
+                    )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

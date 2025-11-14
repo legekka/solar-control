@@ -1,10 +1,9 @@
 import asyncio
 import json
-from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Dict, Optional
 
 
 def _utc_now_iso() -> str:
@@ -13,10 +12,10 @@ def _utc_now_iso() -> str:
 
 def _date_str_from_iso(iso_ts: str) -> str:
     try:
-        dt = datetime.fromisoformat(iso_ts.replace('Z', '+00:00'))
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
     except Exception:
         dt = datetime.now(timezone.utc)
-    return dt.strftime('%Y-%m-%d')
+    return dt.strftime("%Y-%m-%d")
 
 
 def _safe_get(dct: Dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -74,14 +73,21 @@ class GatewayEventLogger:
     def __init__(self) -> None:
         # Fallback defaults; real values may come from settings at runtime
         try:
-            from app.config import settings  # local import to avoid import cycle at module load
-            self.base_dir = Path(getattr(settings, 'gateway_log_dir', 'data/gateway-logs'))
-            self.retention_days = int(getattr(settings, 'gateway_log_retention_days', 365))
+            from app.config import (
+                settings,
+            )  # local import to avoid import cycle at module load
+
+            self.base_dir = Path(
+                getattr(settings, "gateway_log_dir", "data/gateway-logs")
+            )
+            self.retention_days = int(
+                getattr(settings, "gateway_log_retention_days", 365)
+            )
         except Exception:
-            self.base_dir = Path('data/gateway-logs')
+            self.base_dir = Path("data/gateway-logs")
             self.retention_days = 365
 
-        self._queue: 'asyncio.Queue[Dict[str, Any]]' = asyncio.Queue()
+        self._queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue()
         self._writer_task: Optional[asyncio.Task] = None
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running: bool = False
@@ -93,8 +99,12 @@ class GatewayEventLogger:
             return
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._running = True
-        self._writer_task = asyncio.create_task(self._writer_loop(), name='gateway_event_writer')
-        self._cleanup_task = asyncio.create_task(self._retention_loop(), name='gateway_log_retention')
+        self._writer_task = asyncio.create_task(
+            self._writer_loop(), name="gateway_event_writer"
+        )
+        self._cleanup_task = asyncio.create_task(
+            self._retention_loop(), name="gateway_log_retention"
+        )
 
     async def stop(self) -> None:
         if not self._running:
@@ -127,11 +137,11 @@ class GatewayEventLogger:
         """Accept a routing event. Non-blocking and safe if logger not started yet."""
         # Enqueue raw event for JSONL persistence
         # Ensure event has timestamp as top-level for convenience
-        ts = _safe_get(event, 'data', 'timestamp', default=_utc_now_iso())
-        if 'timestamp' not in event:
-            event['timestamp'] = ts
+        ts = _safe_get(event, "data", "timestamp", default=_utc_now_iso())
+        if "timestamp" not in event:
+            event["timestamp"] = ts
         try:
-            self._queue.put_nowait({'kind': 'event', 'ts': ts, 'data': event})
+            self._queue.put_nowait({"kind": "event", "ts": ts, "data": event})
         except Exception:
             # If queue is full or not available, drop rather than block routing
             pass
@@ -143,20 +153,26 @@ class GatewayEventLogger:
     # Internal helpers
     # ---------------
     async def _handle_for_summary(self, event: Dict[str, Any]) -> None:
-        etype = event.get('type')
-        data = event.get('data') or {}
-        request_id = data.get('request_id')
+        etype = event.get("type")
+        data = event.get("data") or {}
+        request_id = data.get("request_id")
         if not request_id:
             return
         async with self._lock:
-            if etype == 'request_start':
+            if etype == "request_start":
                 self._inflight_by_id[request_id] = RequestInProgress(
                     request_id=request_id,
-                    model=data.get('model'),
-                    endpoint=data.get('endpoint'),
-                    client_ip=data.get('client_ip'),
-                    stream=bool(data.get('stream')) if data.get('stream') is not None else None,
-                    start_timestamp=data.get('timestamp') or event.get('timestamp') or _utc_now_iso(),
+                    model=data.get("model"),
+                    endpoint=data.get("endpoint"),
+                    client_ip=data.get("client_ip"),
+                    stream=(
+                        bool(data.get("stream"))
+                        if data.get("stream") is not None
+                        else None
+                    ),
+                    start_timestamp=data.get("timestamp")
+                    or event.get("timestamp")
+                    or _utc_now_iso(),
                 )
                 return
 
@@ -165,39 +181,67 @@ class GatewayEventLogger:
                 # If we missed the start (e.g., logger started later), create a minimal record
                 rip = RequestInProgress(
                     request_id=request_id,
-                    model=data.get('model'),
-                    start_timestamp=data.get('timestamp') or event.get('timestamp') or _utc_now_iso(),
+                    model=data.get("model"),
+                    start_timestamp=data.get("timestamp")
+                    or event.get("timestamp")
+                    or _utc_now_iso(),
                 )
                 self._inflight_by_id[request_id] = rip
 
-            if etype == 'request_routed':
+            if etype == "request_routed":
                 rip.attempts += 1
-                rip.resolved_model = data.get('resolved_model') or rip.resolved_model
-                rip.last_route_host_id = data.get('host_id') or rip.last_route_host_id
-                rip.last_route_host_name = data.get('host_name') or rip.last_route_host_name
-                rip.last_route_instance_id = data.get('instance_id') or rip.last_route_instance_id
-                rip.last_route_instance_url = data.get('instance_url') or rip.last_route_instance_url
-                rip.client_ip = data.get('client_ip') or rip.client_ip
+                rip.resolved_model = data.get("resolved_model") or rip.resolved_model
+                rip.last_route_host_id = data.get("host_id") or rip.last_route_host_id
+                rip.last_route_host_name = (
+                    data.get("host_name") or rip.last_route_host_name
+                )
+                rip.last_route_instance_id = (
+                    data.get("instance_id") or rip.last_route_instance_id
+                )
+                rip.last_route_instance_url = (
+                    data.get("instance_url") or rip.last_route_instance_url
+                )
+                rip.client_ip = data.get("client_ip") or rip.client_ip
                 return
 
-            if etype in ('request_success', 'request_error'):
+            if etype in ("request_success", "request_error"):
                 # Finalize summary
-                end_ts = data.get('timestamp') or event.get('timestamp') or _utc_now_iso()
-                duration = data.get('duration')
-                status = 'success' if etype == 'request_success' else self._classify_error_status(data.get('error_message'))
+                end_ts = (
+                    data.get("timestamp") or event.get("timestamp") or _utc_now_iso()
+                )
+                duration = data.get("duration")
+                status = (
+                    "success"
+                    if etype == "request_success"
+                    else self._classify_error_status(data.get("error_message"))
+                )
                 # Optional usage fields from success payload
-                p_tok = data.get('prompt_tokens') if isinstance(data.get('prompt_tokens'), (int, float)) else None
-                c_tok = data.get('completion_tokens') if isinstance(data.get('completion_tokens'), (int, float)) else None
-                t_tok = data.get('total_tokens') if isinstance(data.get('total_tokens'), (int, float)) else None
+                p_tok = (
+                    data.get("prompt_tokens")
+                    if isinstance(data.get("prompt_tokens"), (int, float))
+                    else None
+                )
+                c_tok = (
+                    data.get("completion_tokens")
+                    if isinstance(data.get("completion_tokens"), (int, float))
+                    else None
+                )
+                t_tok = (
+                    data.get("total_tokens")
+                    if isinstance(data.get("total_tokens"), (int, float))
+                    else None
+                )
                 if t_tok is None and p_tok is not None and c_tok is not None:
                     try:
                         t_tok = int(p_tok) + int(c_tok)
                     except Exception:
                         t_tok = None
-                _dt = data.get('decode_tps')
+                _dt = data.get("decode_tps")
                 decode_tps = float(_dt) if isinstance(_dt, (int, float)) else None
-                _dmpt = data.get('decode_ms_per_token')
-                decode_ms_per_token = float(_dmpt) if isinstance(_dmpt, (int, float)) else None
+                _dmpt = data.get("decode_ms_per_token")
+                decode_ms_per_token = (
+                    float(_dmpt) if isinstance(_dmpt, (int, float)) else None
+                )
                 summary = RequestSummary(
                     request_id=request_id,
                     status=status,
@@ -209,12 +253,16 @@ class GatewayEventLogger:
                     attempts=max(1, rip.attempts),
                     start_timestamp=rip.start_timestamp,
                     end_timestamp=end_ts,
-                    duration_s=float(duration) if duration is not None else self._compute_duration(rip.start_timestamp, end_ts),
+                    duration_s=(
+                        float(duration)
+                        if duration is not None
+                        else self._compute_duration(rip.start_timestamp, end_ts)
+                    ),
                     host_id=rip.last_route_host_id,
                     host_name=rip.last_route_host_name,
                     instance_id=rip.last_route_instance_id,
                     instance_url=rip.last_route_instance_url,
-                    error_message=data.get('error_message'),
+                    error_message=data.get("error_message"),
                     prompt_tokens=int(p_tok) if p_tok is not None else None,
                     completion_tokens=int(c_tok) if c_tok is not None else None,
                     total_tokens=int(t_tok) if t_tok is not None else None,
@@ -222,34 +270,40 @@ class GatewayEventLogger:
                     decode_ms_per_token=decode_ms_per_token,
                 )
                 try:
-                    self._queue.put_nowait({'kind': 'summary', 'ts': end_ts, 'data': asdict(summary)})
+                    self._queue.put_nowait(
+                        {"kind": "summary", "ts": end_ts, "data": asdict(summary)}
+                    )
                 except Exception:
                     pass
                 # Remove from inflight
                 self._inflight_by_id.pop(request_id, None)
 
-    def _compute_duration(self, start_iso: Optional[str], end_iso: str) -> Optional[float]:
+    def _compute_duration(
+        self, start_iso: Optional[str], end_iso: str
+    ) -> Optional[float]:
         if not start_iso:
             return None
         try:
-            s = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
-            e = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+            s = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+            e = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
             return max(0.0, (e - s).total_seconds())
         except Exception:
             return None
 
     def _classify_error_status(self, message: Optional[str]) -> str:
         if not message:
-            return 'error'
+            return "error"
         m = message.lower()
-        if 'no instances available' in m or 'model' in m and 'not found' in m:
-            return 'missed'
-        return 'error'
+        if "no instances available" in m or "model" in m and "not found" in m:
+            return "missed"
+        return "error"
 
     async def _writer_loop(self) -> None:
         # Simple writer loop that appends to daily JSONL files
         # Keep small cache of open file handles per day to reduce open/close churn
-        open_files: Dict[str, Dict[str, Any]] = {}  # date_str -> { 'events': file, 'requests': file }
+        open_files: Dict[str, Dict[str, Any]] = (
+            {}
+        )  # date_str -> { 'events': file, 'requests': file }
 
         def ensure_open(date_str: str, kind: str):
             day_dir = self.base_dir
@@ -257,23 +311,27 @@ class GatewayEventLogger:
             if date_str not in open_files:
                 open_files[date_str] = {}
             if kind not in open_files[date_str]:
-                filename = f"{date_str}.events.jsonl" if kind == 'event' else f"{date_str}.requests.jsonl"
+                filename = (
+                    f"{date_str}.events.jsonl"
+                    if kind == "event"
+                    else f"{date_str}.requests.jsonl"
+                )
                 path = day_dir / filename
                 # newline='\n' ensures consistent line endings
-                open_files[date_str][kind] = open(path, 'a', encoding='utf-8')
+                open_files[date_str][kind] = open(path, "a", encoding="utf-8")
 
         try:
             while True:
                 item = await self._queue.get()
-                kind_val = item.get('kind')
-                ts = item.get('ts') or _utc_now_iso()
+                kind_val = item.get("kind")
+                ts = item.get("ts") or _utc_now_iso()
                 date_str = _date_str_from_iso(ts)
                 try:
-                    kind: str = 'event' if kind_val == 'event' else 'summary'
+                    kind: str = "event" if kind_val == "event" else "summary"
                     ensure_open(date_str, kind)
                     f = open_files[date_str][kind]
-                    line = json.dumps(item['data'], ensure_ascii=False)
-                    f.write(line + '\n')
+                    line = json.dumps(item["data"], ensure_ascii=False)
+                    f.write(line + "\n")
                     f.flush()
                 except Exception:
                     # Drop on disk error; continue
@@ -300,11 +358,13 @@ class GatewayEventLogger:
     async def _cleanup_old_logs(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(days=int(self.retention_days))
         try:
-            for path in self.base_dir.glob('*.jsonl'):
+            for path in self.base_dir.glob("*.jsonl"):
                 # Expect filename format YYYY-MM-DD.*.jsonl
                 try:
-                    date_part = path.name.split('.', 1)[0]
-                    dt = datetime.strptime(date_part, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                    date_part = path.name.split(".", 1)[0]
+                    dt = datetime.strptime(date_part, "%Y-%m-%d").replace(
+                        tzinfo=timezone.utc
+                    )
                     if dt < cutoff:
                         try:
                             path.unlink(missing_ok=True)  # type: ignore[arg-type]
@@ -318,5 +378,3 @@ class GatewayEventLogger:
 
 # Global singleton
 event_logger = GatewayEventLogger()
-
-

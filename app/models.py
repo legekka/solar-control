@@ -6,6 +6,7 @@ from enum import Enum
 
 class HostStatus(str, Enum):
     """Status of a solar-host"""
+
     ONLINE = "online"
     OFFLINE = "offline"
     ERROR = "error"
@@ -13,6 +14,7 @@ class HostStatus(str, Enum):
 
 class MemoryInfo(BaseModel):
     """Memory usage information"""
+
     used_gb: float = Field(..., description="Used memory in GB")
     total_gb: float = Field(..., description="Total memory in GB")
     percent: float = Field(..., description="Usage percentage")
@@ -21,6 +23,7 @@ class MemoryInfo(BaseModel):
 
 class Host(BaseModel):
     """Solar host information"""
+
     id: str
     name: str
     url: str
@@ -33,6 +36,7 @@ class Host(BaseModel):
 
 class HostCreate(BaseModel):
     """Request to register a new host"""
+
     name: str
     url: str
     api_key: str
@@ -40,28 +44,34 @@ class HostCreate(BaseModel):
 
 class HostResponse(BaseModel):
     """Response for host operations"""
+
     host: Host
     message: str
 
 
 class ModelInfo(BaseModel):
     """Model information for OpenAI compatibility"""
+
     id: str
     object: str = "model"
-    created: int = Field(default_factory=lambda: int(datetime.now(timezone.utc).timestamp()))
+    created: int = Field(
+        default_factory=lambda: int(datetime.now(timezone.utc).timestamp())
+    )
     owned_by: str = "solar"
 
 
 class ModelsResponse(BaseModel):
     """OpenAI /v1/models response"""
+
     object: str = "list"
     data: List[ModelInfo]
 
 
 class ChatMessage(BaseModel):
     """Chat message"""
-    model_config = ConfigDict(extra='allow')
-    
+
+    model_config = ConfigDict(extra="allow")
+
     role: str
     content: str
     name: Optional[str] = None  # Optional name field for OpenAI compatibility
@@ -69,8 +79,9 @@ class ChatMessage(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """OpenAI chat completion request"""
-    model_config = ConfigDict(extra='allow')
-    
+
+    model_config = ConfigDict(extra="allow")
+
     model: str
     messages: List[ChatMessage]
     temperature: Optional[float] = None
@@ -88,8 +99,9 @@ class ChatCompletionRequest(BaseModel):
 
 class CompletionRequest(BaseModel):
     """OpenAI completion request"""
-    model_config = ConfigDict(extra='allow')
-    
+
+    model_config = ConfigDict(extra="allow")
+
     model: str
     prompt: str
     temperature: Optional[float] = None
@@ -107,7 +119,7 @@ class CompletionRequest(BaseModel):
 
 class ProxyRequest(BaseModel):
     """Generic proxy request"""
+
     endpoint: str
     method: str = "POST"
     data: Optional[Dict[str, Any]] = None
-
