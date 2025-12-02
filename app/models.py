@@ -135,6 +135,16 @@ class ClassifyRequest(BaseModel):
 
     model: str
     input: Any = Field(..., description="Text or list of texts to classify")
+    return_all_scores: bool = Field(
+        default=False, description="Return scores for all classes, not just top prediction"
+    )
+
+
+class ClassifyScoreItem(BaseModel):
+    """Individual class score."""
+    
+    label: str
+    score: float
 
 
 class ClassifyChoice(BaseModel):
@@ -143,6 +153,9 @@ class ClassifyChoice(BaseModel):
     index: int
     label: str
     score: float
+    all_scores: Optional[List[ClassifyScoreItem]] = Field(
+        default=None, description="Scores for all classes (when return_all_scores=True)"
+    )
 
 
 class ClassifyResponse(BaseModel):
