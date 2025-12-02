@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from app.models import ChatCompletionRequest, CompletionRequest
+from app.models import ChatCompletionRequest, CompletionRequest, ClassifyRequest
 from app.gateway import gateway
 
 
@@ -83,6 +83,35 @@ async def completions(request: CompletionRequest, client: Request):
                 request.model, "/v1/completions", request_data, client_ip
             )
             return response
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/classify")
+async def classify(request: ClassifyRequest, client: Request):
+    """Classification endpoint for HuggingFace SequenceClassification models.
+
+    Routes to instances that support the /v1/classify endpoint.
+    """
+    try:
+        # Get client IP
+        client_ip = client.client.host if client.client else "unknown"
+
+        # Convert request to dict
+        request_data = request.model_dump(exclude_none=True)
+
+        # Route to classification-capable instance
+        response = await gateway.route_request(
+            request.model,
+            "/v1/classify",
+            request_data,
+            client_ip,
+            required_endpoint="/v1/classify",
+        )
+        return response
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -123,3 +123,33 @@ class ProxyRequest(BaseModel):
     endpoint: str
     method: str = "POST"
     data: Optional[Dict[str, Any]] = None
+
+
+# Classification models for HuggingFace SequenceClassification backend
+
+
+class ClassifyRequest(BaseModel):
+    """Classification request for HuggingFace classification models"""
+
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    input: Any = Field(..., description="Text or list of texts to classify")
+
+
+class ClassifyChoice(BaseModel):
+    """Classification result for a single input"""
+
+    index: int
+    label: str
+    score: float
+
+
+class ClassifyResponse(BaseModel):
+    """Classification response"""
+
+    id: str
+    object: str = "classification"
+    model: str
+    choices: List[ClassifyChoice]
+    usage: Dict[str, int]

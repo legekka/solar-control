@@ -95,12 +95,28 @@ class OpenAIGateway:
                                 instance_url = f"{host_base}:{port}"
                                 instance_api_key = instance["config"]["api_key"]
 
+                                # Get supported endpoints (default to standard OpenAI endpoints)
+                                supported_endpoints = instance.get(
+                                    "supported_endpoints",
+                                    [
+                                        "/v1/chat/completions",
+                                        "/v1/completions",
+                                        "/v1/models",
+                                    ],
+                                )
+                                # Get backend type if available
+                                backend_type = instance.get("config", {}).get(
+                                    "backend_type", "llamacpp"
+                                )
+
                                 entry = {
                                     "host_id": host.id,
                                     "instance_id": instance["id"],
                                     "url": instance_url,
                                     "api_key": instance_api_key,
                                     "model_alias": alias,
+                                    "supported_endpoints": supported_endpoints,
+                                    "backend_type": backend_type,
                                 }
                                 new_model_map[alias].append(entry)
                                 key = f"{host.id}-{instance['id']}"
@@ -417,7 +433,11 @@ class OpenAIGateway:
             return None
 
     def _get_next_instance(
-        self, model: str, *, exclude_keys: Optional[Set[str]] = None
+        self,
+        model: str,
+        *,
+        exclude_keys: Optional[Set[str]] = None,
+        required_endpoint: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Get next instance for a model using host-aware load balancing.
 
@@ -427,6 +447,11 @@ class OpenAIGateway:
         2. If all candidate hosts are busy, choose the host with the smallest current active
            parameter weight (sum of B units of in-flight models on that host). Ties break by
            alphabetical host name, then per-model round-robin among instances on that host.
+
+        Args:
+            model: Model name or alias to route to.
+            exclude_keys: Set of instance keys to exclude from selection.
+            required_endpoint: If specified, only consider instances that support this endpoint.
         """
         # Resolve partial model name to full model name
         resolved_model = self._resolve_model_name(model)
@@ -440,6 +465,16 @@ class OpenAIGateway:
             return None
 
         available_instances = self.model_to_hosts[resolved_model]
+
+        # Filter by required endpoint if specified
+        if required_endpoint:
+            available_instances = [
+                inst
+                for inst in available_instances
+                if required_endpoint in inst.get("supported_endpoints", [])
+            ]
+            if not available_instances:
+                return None
 
         # Health filtering
         def healthy_now(inst: Dict[str, Any]) -> bool:
@@ -577,8 +612,17 @@ class OpenAIGateway:
         endpoint: str,
         data: Dict[str, Any],
         client_ip: str = "unknown",
+        required_endpoint: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Route a request to the appropriate instance"""
+        """Route a request to the appropriate instance.
+
+        Args:
+            model: Model name or alias to route to.
+            endpoint: API endpoint path (e.g., "/v1/chat/completions").
+            data: Request data to forward.
+            client_ip: Client IP for logging.
+            required_endpoint: If specified, only route to instances supporting this endpoint.
+        """
         # Generate unique request ID and start time
         request_id = str(uuid.uuid4())
         start_time = time.time()
@@ -610,9 +654,16 @@ class OpenAIGateway:
         attempted: Set[str] = set()
         last_error: Optional[Exception] = None
         retried_once = False
+        # Use endpoint as required_endpoint filter if not explicitly provided
+        filter_endpoint = required_endpoint or endpoint
+
         for attempt in range(max(1, int(settings.route_max_attempts))):
             # Get instance for this model
-            instance = self._get_next_instance(model, exclude_keys=attempted)
+            instance = self._get_next_instance(
+                model,
+                exclude_keys=attempted,
+                required_endpoint=filter_endpoint,
+            )
             if not instance:
                 if not retried_once:
                     retried_once = True
@@ -823,8 +874,17 @@ class OpenAIGateway:
         endpoint: str,
         data: Dict[str, Any],
         client_ip: str = "unknown",
+        required_endpoint: Optional[str] = None,
     ):
-        """Stream a request to the appropriate instance"""
+        """Stream a request to the appropriate instance.
+
+        Args:
+            model: Model name or alias to route to.
+            endpoint: API endpoint path (e.g., "/v1/chat/completions").
+            data: Request data to forward.
+            client_ip: Client IP for logging.
+            required_endpoint: If specified, only route to instances supporting this endpoint.
+        """
         # Generate unique request ID and start time
         request_id = str(uuid.uuid4())
         start_time = time.time()
@@ -853,12 +913,19 @@ class OpenAIGateway:
         if not self.session:
             raise RuntimeError("Failed to create aiohttp session")
 
+        # Use endpoint as required_endpoint filter if not explicitly provided
+        filter_endpoint = required_endpoint or endpoint
+
         # Retry loop for streaming on connect errors/timeouts
         attempted: Set[str] = set()
         last_error: Optional[Exception] = None
         retried_once = False
         for attempt in range(max(1, int(settings.route_max_attempts))):
-            instance = self._get_next_instance(model, exclude_keys=attempted)
+            instance = self._get_next_instance(
+                model,
+                exclude_keys=attempted,
+                required_endpoint=filter_endpoint,
+            )
             if not instance:
                 if not retried_once:
                     retried_once = True
