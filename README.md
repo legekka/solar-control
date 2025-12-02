@@ -1,16 +1,27 @@
 # Solar Control
 
-A coordinator for multiple solar-host instances with OpenAI-compatible API gateway.
+A coordinator for multiple solar-host instances with OpenAI-compatible API gateway. Supports multiple backend types including llama.cpp and HuggingFace models.
 
 ## Features
 
+- **Multi-backend support** - Route to llama.cpp, HuggingFace Causal LM, and Classification models
 - Manage multiple solar-host instances
 - OpenAI-compatible API gateway with model routing
+- **Classification endpoint** - Custom `/v1/classify` endpoint for sequence classification models
 - Model alias resolution (exact match; optional prefix fallback)
 - Host-aware, model-size-weighted load balancing (prefers free hosts; otherwise chooses lowest active parameter load; round-robin tiebreaker)
+- **Endpoint-aware routing** - Routes requests only to instances that support the requested endpoint
 - Transparent authentication handling
 - WebSocket log aggregation
 - Docker support
+
+## Supported Backend Types
+
+| Backend | Endpoints |
+|---------|-----------|
+| **llama.cpp** | `/v1/chat/completions`, `/v1/completions`, `/v1/models` |
+| **HuggingFace Causal** | `/v1/chat/completions`, `/v1/completions`, `/v1/models` |
+| **HuggingFace Classification** | `/v1/classify`, `/v1/models` |
 
 ## Installation
 
@@ -69,6 +80,10 @@ docker-compose down
 - `POST /v1/completions` - Text completions (routed by model)
 - `GET /v1/models` - List all available models
 
+### Classification Gateway
+
+- `POST /v1/classify` - Text classification (routed by model to HuggingFace Classification instances)
+
 ### Proxy Endpoints
 
 - `POST /hosts/{host_id}/instances/{instance_id}/start` - Start instance
@@ -77,7 +92,7 @@ docker-compose down
 
 ## Authentication
 
-All requests require an `X-API-Key` header with your configured gateway API key.
+All requests require an `X-API-Key` header (or `Authorization: Bearer <key>`) with your configured gateway API key.
 
 Solar-control handles authentication to solar-hosts transparently using stored credentials.
 
@@ -85,25 +100,84 @@ Solar-control handles authentication to solar-hosts transparently using stored c
 
 ```json
 {
-  "name": "Mac Studio 1",
+  "name": "GPU Server 1",
   "url": "http://192.168.1.100:8001",
   "api_key": "host-specific-api-key"
 }
 ```
 
-## OpenAI Gateway Usage
+## Gateway Usage Examples
 
-Once hosts are registered and instances are running, use the gateway like any OpenAI API:
+### Chat Completions (llama.cpp or HuggingFace Causal)
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "X-API-Key: your-gateway-api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-oss:120b",
+    "model": "llama3:8b",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-The gateway automatically routes to the correct host based on the model alias.
+### Text Classification (HuggingFace Classification)
 
+```bash
+curl http://localhost:8000/v1/classify \
+  -H "X-API-Key: your-gateway-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "classifier:deberta",
+    "input": "This product is amazing! I love it."
+  }'
+```
+
+**Classification Response:**
+
+```json
+{
+  "id": "clf-abc123",
+  "object": "classification",
+  "model": "classifier:deberta",
+  "choices": [
+    {
+      "index": 0,
+      "label": "positive",
+      "score": 0.9876
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "total_tokens": 12
+  }
+}
+```
+
+### Batch Classification
+
+```bash
+curl http://localhost:8000/v1/classify \
+  -H "X-API-Key: your-gateway-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "classifier:deberta",
+    "input": [
+      "This is great!",
+      "This is terrible."
+    ]
+  }'
+```
+
+## Routing Behavior
+
+Solar-control automatically routes requests based on:
+
+1. **Model alias** - Matches the `model` field to instance aliases
+2. **Endpoint support** - Only routes to instances that support the requested endpoint
+3. **Load balancing** - Prefers idle instances; distributes load based on model size
+
+For example:
+- A `/v1/chat/completions` request will only route to llama.cpp or HuggingFace Causal instances
+- A `/v1/classify` request will only route to HuggingFace Classification instances
+
+The gateway automatically discovers which endpoints each instance supports when the model registry is refreshed.
