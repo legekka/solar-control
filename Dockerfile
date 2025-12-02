@@ -21,6 +21,9 @@ RUN mkdir -p /app/data
 # Note: With host networking, EXPOSE is just documentation
 # The actual port is determined by the PORT environment variable at runtime
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "${HOST:-0.0.0.0}", "--port", "${PORT:-8000}"]
+# Default environment variables
+ENV HOST=0.0.0.0
+ENV PORT=8000
+
+CMD ["sh", "-c", "uvicorn app.main:app --host $HOST --port $PORT"]
 
