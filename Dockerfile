@@ -22,6 +22,5 @@ RUN mkdir -p /app/data
 # The actual port is determined by the PORT environment variable at runtime
 
 # Run the application
-# Use shell form to allow environment variable expansion
-CMD uvicorn app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}
+CMD ["uvicorn", "app.main:app", "--host", "${HOST:-0.0.0.0}", "--port", "${PORT:-8000}"]
 
