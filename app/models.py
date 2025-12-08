@@ -215,6 +215,7 @@ class WSMessageType(str, Enum):
     LOG = "log"
     INSTANCE_STATE = "instance_state"
     HOST_HEALTH = "host_health"
+    INSTANCES_UPDATE = "instances_update"  # Full instance list update
 
     # Control -> WebUI messages (also used internally)
     HOST_STATUS = "host_status"
@@ -238,11 +239,14 @@ class WSMessage(BaseModel):
 
 
 class WSRegistration(BaseModel):
-    """Host registration message data"""
+    """Host registration message data.
 
-    host_id: str
-    api_key: str
-    host_name: Optional[str] = None
+    The host identifies itself using its API key. Solar-control will
+    look up which registered host has this API key.
+    """
+
+    api_key: str  # Used to identify which host this is
+    host_name: Optional[str] = None  # Optional display name override
     instances: List[Dict[str, Any]] = Field(default_factory=list)
 
 

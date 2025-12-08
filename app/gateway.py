@@ -47,12 +47,19 @@ class OpenAIGateway:
             await self.session.close()
 
     async def refresh_model_registry(self):
-        """Refresh the model registry from all hosts"""
+        """Refresh the model registry from all hosts.
+
+        WebSocket 2.0: Prefer using cached instance data from WebSocket-connected hosts.
+        Only fall back to HTTP polling for hosts not connected via WebSocket.
+        """
         await self._ensure_session()
 
         # Guard for type-checkers; ensure we have a session
         if not self.session:
             return
+
+        # Import WebSocket manager to check connected hosts
+        from app.routes.websockets import host_connection_manager
 
         # Preserve previous entries grouped by host so we can retain on failure
         previous_map = self.model_to_hosts
@@ -66,9 +73,62 @@ class OpenAIGateway:
         new_model_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         seen_instance_keys: Set[str] = set()
 
-        # Query each host for its instances
+        # Process each host
         for host in host_manager.get_all_hosts():
             previous_entries = previous_entries_by_host.get(host.id, [])
+
+            # Check if host is connected via WebSocket
+            if host_connection_manager.is_host_connected(host.id):
+                # Use cached instance data from WebSocket
+                ws_instances = host_connection_manager.get_host_instances(host.id)
+
+                # Host is connected, so it's online
+                host_manager.update_host_status(host.id, HostStatus.ONLINE)
+
+                # Add running instances to registry
+                for instance in ws_instances:
+                    if instance.get("status") == "running":
+                        alias = instance.get("alias", "unknown")
+                        port = instance.get("port")
+
+                        if not port:
+                            continue
+
+                        # Build instance URL
+                        host_base = host.url.rsplit(":", 1)[0]  # Remove port
+                        instance_url = f"{host_base}:{port}"
+
+                        # Get supported endpoints (default to standard OpenAI endpoints)
+                        supported_endpoints = instance.get(
+                            "supported_endpoints",
+                            [
+                                "/v1/chat/completions",
+                                "/v1/completions",
+                                "/v1/models",
+                            ],
+                        )
+                        backend_type = instance.get("backend_type", "llamacpp")
+
+                        entry = {
+                            "host_id": host.id,
+                            "instance_id": instance["id"],
+                            "url": instance_url,
+                            "api_key": host.api_key,  # Use host's API key
+                            "model_alias": alias,
+                            "supported_endpoints": supported_endpoints,
+                            "backend_type": backend_type,
+                        }
+                        new_model_map[alias].append(entry)
+                        key = f"{host.id}-{instance['id']}"
+                        seen_instance_keys.add(key)
+                        if key not in self.instance_health:
+                            self.instance_health[key] = {
+                                "last_ok": None,
+                                "cooldown_until": None,
+                            }
+                continue
+
+            # Fallback: HTTP polling for hosts not connected via WebSocket
             try:
                 # Get instances from host
                 url = f"{host.url}/instances"

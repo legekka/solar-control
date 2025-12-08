@@ -1,12 +1,17 @@
-from fastapi import APIRouter, Query
-from typing import Any, Deque, Dict, List, Optional, Tuple
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-import asyncio
-import json
-from collections import deque
+"""Gateway monitoring REST API endpoints.
 
-from app.config import settings
+Provides endpoints for:
+- /gateway/stats - Aggregated statistics
+- /gateway/requests - Request history with filtering
+- /gateway/events/recent - Recent events (errors, reroutes)
+"""
+
+from fastapi import APIRouter, Query
+from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone, timedelta
+import asyncio
+
+from app.gateway_logs import gateway_logger
 
 
 router = APIRouter(prefix="/gateway", tags=["gateway"])
@@ -23,54 +28,16 @@ def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _date_range_utc(start: datetime, end: datetime) -> List[datetime]:
-    days = []
-    cur = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
-    last = datetime(end.year, end.month, end.day, tzinfo=timezone.utc)
-    while cur <= last:
-        days.append(cur)
-        cur = cur + timedelta(days=1)
-    return days
-
-
-def _log_paths(kind: str, start: datetime, end: datetime) -> List[Path]:
-    base = Path(getattr(settings, "gateway_log_dir", "data/gateway-logs"))
-    paths: List[Path] = []
-    for d in _date_range_utc(start, end):
-        date_str = d.strftime("%Y-%m-%d")
-        filename = (
-            f"{date_str}.events.jsonl"
-            if kind == "events"
-            else f"{date_str}.requests.jsonl"
-        )
-        p = base / filename
-        if p.exists():
-            paths.append(p)
-    return paths
-
-
-def _load_jsonl_filtered(paths: List[Path], predicate) -> List[dict]:
-    out: List[dict] = []
-    for p in paths:
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        obj = json.loads(line)
-                        if predicate(obj):
-                            out.append(obj)
-                    except Exception:
-                        continue
-        except Exception:
-            continue
-    return out
-
-
 @router.get("/stats")
 async def get_stats(
     from_ts: Optional[str] = Query(None, alias="from"),
     to_ts: Optional[str] = Query(None, alias="to"),
+    request_type: Optional[str] = Query(
+        None,
+        description="Filter by request type: chat, completion, embedding, classification",
+    ),
 ):
+    """Get aggregated gateway statistics."""
     now = datetime.now(timezone.utc)
     start = _parse_iso(from_ts) or datetime(
         now.year, now.month, now.day, tzinfo=timezone.utc
@@ -78,35 +45,27 @@ async def get_stats(
     end = _parse_iso(to_ts) or now
 
     def compute() -> Dict[str, Any]:
-        # Requests summaries
-        req_paths = _log_paths("requests", start, end)
+        # Read all summaries in range
+        summaries = gateway_logger.read_requests(
+            start,
+            end,
+            request_type=(
+                request_type if request_type and request_type != "all" else None
+            ),
+        )
 
-        def in_range_req(o: dict) -> bool:
-            ts = o.get("end_timestamp") or o.get("timestamp")
-            dt = _parse_iso(ts)
-            return bool(dt and (start <= dt <= end))
-
-        summaries = _load_jsonl_filtered(req_paths, in_range_req)
+        # Count by status
         completed = sum(1 for s in summaries if s.get("status") == "success")
         missed = sum(1 for s in summaries if s.get("status") == "missed")
         error = sum(1 for s in summaries if s.get("status") == "error")
 
-        # Reroutes (unique requests with reroute events)
-        evt_paths = _log_paths("events", start, end)
-
-        def reroute_pred(o: dict) -> bool:
-            if o.get("type") != "request_reroute":
-                return False
-            ts = (o.get("data") or {}).get("timestamp") or o.get("timestamp")
-            dt = _parse_iso(ts)
-            return bool(dt and (start <= dt <= end))
-
-        reroutes = _load_jsonl_filtered(evt_paths, reroute_pred)
+        # Count reroutes
+        events = gateway_logger.read_events(start, end, types=["request_reroute"])
         rerouted_unique = len(
             {
-                (e.get("data") or {}).get("request_id")
-                for e in reroutes
-                if (e.get("data") or {}).get("request_id")
+                e.get("data", {}).get("request_id")
+                for e in events
+                if e.get("data", {}).get("request_id")
             }
         )
 
@@ -147,6 +106,7 @@ async def get_stats(
                 rec["token_out"] += int(s["completion_tokens"])
             if isinstance(s.get("duration_s"), (int, float)):
                 rec["dur_sum"] += float(s["duration_s"])
+
         model_rows = [
             {
                 "model": k,
@@ -183,6 +143,7 @@ async def get_stats(
                 rec["token_out"] += int(s["completion_tokens"])
             if isinstance(s.get("duration_s"), (int, float)):
                 rec["dur_sum"] += float(s["duration_s"])
+
         host_rows = [
             {
                 "host_id": k,
@@ -197,6 +158,31 @@ async def get_stats(
             for k, v in by_host.items()
         ]
 
+        # Per-request-type breakdown
+        by_type: Dict[str, Dict[str, Any]] = {}
+        for s in summaries:
+            rt = s.get("request_type") or "unknown"
+            rec = by_type.setdefault(
+                rt,
+                {
+                    "request_type": rt,
+                    "total": 0,
+                    "success": 0,
+                    "error": 0,
+                    "missed": 0,
+                },
+            )
+            rec["total"] += 1
+            status = s.get("status")
+            if status == "success":
+                rec["success"] += 1
+            elif status == "error":
+                rec["error"] += 1
+            elif status == "missed":
+                rec["missed"] += 1
+
+        type_rows = list(by_type.values())
+
         return {
             "from": start.isoformat(),
             "to": end.isoformat(),
@@ -210,6 +196,7 @@ async def get_stats(
             "avg_tokens_out": avg_tokens_out,
             "models": model_rows,
             "hosts": host_rows,
+            "request_types": type_rows,
         }
 
     result = await asyncio.to_thread(compute)
@@ -221,32 +208,32 @@ async def list_requests(
     from_ts: Optional[str] = Query(None, alias="from"),
     to_ts: Optional[str] = Query(None, alias="to"),
     status: str = Query("all", pattern="^(all|success|error|missed)$"),
+    request_type: Optional[str] = Query(
+        None,
+        description="Filter by request type: chat, completion, embedding, classification",
+    ),
     model: Optional[str] = None,
     host_id: Optional[str] = None,
     page: int = 1,
     limit: int = 200,
 ):
+    """List gateway requests with filtering and pagination."""
     now = datetime.now(timezone.utc)
     start = _parse_iso(from_ts) or (now - timedelta(days=1))
     end = _parse_iso(to_ts) or now
 
     def load() -> Dict[str, Any]:
-        req_paths = _log_paths("requests", start, end)
-
-        def pred(o: dict) -> bool:
-            ts = o.get("end_timestamp") or o.get("timestamp")
-            dt = _parse_iso(ts)
-            if not (dt and (start <= dt <= end)):
-                return False
-            if status != "all" and o.get("status") != status:
-                return False
-            if model and o.get("model") != model and o.get("resolved_model") != model:
-                return False
-            if host_id and o.get("host_id") != host_id:
-                return False
-            return True
-
-        items = _load_jsonl_filtered(req_paths, pred)
+        # Use gateway_logger to read with filtering
+        items = gateway_logger.read_requests(
+            start,
+            end,
+            status=status if status != "all" else None,
+            request_type=(
+                request_type if request_type and request_type != "all" else None
+            ),
+            model=model,
+            host_id=host_id,
+        )
 
         # Sort by end_timestamp desc
         def sort_key(o: dict) -> Tuple[float, str]:
@@ -259,6 +246,7 @@ async def list_requests(
         start_idx = max(0, (page - 1) * max(1, limit))
         end_idx = start_idx + max(1, limit)
         page_items = items[start_idx:end_idx]
+
         return {
             "from": start.isoformat(),
             "to": end.isoformat(),
@@ -279,45 +267,29 @@ async def recent_events(
     types: str = "request_error,request_reroute",
     limit: int = 1000,
 ):
+    """Get recent gateway events (errors, reroutes)."""
     now = datetime.now(timezone.utc)
     start = _parse_iso(from_ts) or (now - timedelta(days=1))
     end = _parse_iso(to_ts) or now
-    wanted = {t.strip() for t in types.split(",") if t.strip()}
+    wanted = [t.strip() for t in types.split(",") if t.strip()]
 
     def load() -> Dict[str, Any]:
-        evt_paths = _log_paths("events", start, end)
-        buf: Deque[dict] = deque(maxlen=max(1, limit))
-        for p in evt_paths:
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            obj = json.loads(line)
-                            et = obj.get("type")
-                            ts = (obj.get("data") or {}).get("timestamp") or obj.get(
-                                "timestamp"
-                            )
-                            dt = _parse_iso(ts)
-                            if et in wanted and dt and (start <= dt <= end):
-                                buf.append(obj)
-                        except Exception:
-                            continue
-            except Exception:
-                continue
+        events = gateway_logger.read_events(start, end, types=wanted)
 
-        # Return newest last (consistent with streaming); sort by timestamp
+        # Sort by timestamp
         def sort_key(o: dict) -> float:
             ts = (o.get("data") or {}).get("timestamp") or o.get("timestamp") or ""
             dt = _parse_iso(ts) or datetime.fromtimestamp(0, tz=timezone.utc)
             return dt.timestamp()
 
-        items = list(buf)
-        items.sort(key=sort_key)
+        events.sort(key=sort_key)
+
+        # Return last N items
         return {
             "from": start.isoformat(),
             "to": end.isoformat(),
-            "types": list(wanted),
-            "items": items[-limit:],
+            "types": wanted,
+            "items": events[-limit:] if len(events) > limit else events,
         }
 
     result = await asyncio.to_thread(load)
