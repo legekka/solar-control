@@ -202,3 +202,78 @@ class EmbeddingResponse(BaseModel):
     data: List[EmbeddingData]
     model: str
     usage: Dict[str, int]
+
+
+# WebSocket 2.0 Message Types
+
+
+class WSMessageType(str, Enum):
+    """WebSocket message types for the unified protocol"""
+
+    # Host -> Control messages
+    REGISTRATION = "registration"
+    LOG = "log"
+    INSTANCE_STATE = "instance_state"
+    HOST_HEALTH = "host_health"
+
+    # Control -> WebUI messages (also used internally)
+    HOST_STATUS = "host_status"
+    INITIAL_STATUS = "initial_status"
+    REQUEST_START = "request_start"
+    REQUEST_ROUTED = "request_routed"
+    REQUEST_SUCCESS = "request_success"
+    REQUEST_ERROR = "request_error"
+    REQUEST_REROUTE = "request_reroute"
+    KEEPALIVE = "keepalive"
+
+
+class WSMessage(BaseModel):
+    """Base WebSocket message envelope"""
+
+    type: WSMessageType
+    host_id: Optional[str] = None
+    instance_id: Optional[str] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WSRegistration(BaseModel):
+    """Host registration message data"""
+
+    host_id: str
+    api_key: str
+    host_name: Optional[str] = None
+    instances: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class WSLogMessage(BaseModel):
+    """Log message from host"""
+
+    seq: int
+    line: str
+    level: Optional[str] = None
+
+
+class WSInstanceState(BaseModel):
+    """Instance runtime state update"""
+
+    busy: bool = False
+    phase: Optional[str] = None
+    prefill_progress: Optional[float] = None
+    active_slots: int = 0
+    slot_id: Optional[int] = None
+    task_id: Optional[int] = None
+    prefill_prompt_tokens: Optional[int] = None
+    generated_tokens: Optional[int] = None
+    decode_tps: Optional[float] = None
+    decode_ms_per_token: Optional[float] = None
+    checkpoint_index: Optional[int] = None
+    checkpoint_total: Optional[int] = None
+
+
+class WSHostHealth(BaseModel):
+    """Host health/memory update"""
+
+    memory: Optional[MemoryInfo] = None
+    instance_count: int = 0
+    running_instance_count: int = 0
