@@ -4,7 +4,7 @@ A coordinator for multiple solar-host instances with OpenAI-compatible API gatew
 
 ## Features
 
-- **Multi-backend support** - Route to llama.cpp, HuggingFace Causal LM, and Classification models
+- **Multi-backend support** - Route to llama.cpp, HuggingFace Causal LM, Classification, and Embedding models
 - Manage multiple solar-host instances
 - OpenAI-compatible API gateway with model routing
 - **Classification endpoint** - Custom `/v1/classify` endpoint for sequence classification models
@@ -22,6 +22,7 @@ A coordinator for multiple solar-host instances with OpenAI-compatible API gatew
 | **llama.cpp** | `/v1/chat/completions`, `/v1/completions`, `/v1/models` |
 | **HuggingFace Causal** | `/v1/chat/completions`, `/v1/completions`, `/v1/models` |
 | **HuggingFace Classification** | `/v1/classify`, `/v1/models` |
+| **HuggingFace Embedding** | `/v1/embeddings`, `/v1/models` |
 
 ## Installation
 
@@ -83,6 +84,10 @@ docker-compose down
 ### Classification Gateway
 
 - `POST /v1/classify` - Text classification (routed by model to HuggingFace Classification instances)
+
+### Embeddings Gateway
+
+- `POST /v1/embeddings` - Text embeddings (routed by model to HuggingFace Embedding instances)
 
 ### Proxy Endpoints
 
@@ -168,6 +173,53 @@ curl http://localhost:8000/v1/classify \
   }'
 ```
 
+### Text Embeddings (HuggingFace Embedding)
+
+```bash
+curl http://localhost:8000/v1/embeddings \
+  -H "X-API-Key: your-gateway-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "embed:minilm",
+    "input": "Hello, world!"
+  }'
+```
+
+**Embedding Response:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "embedding": [0.0123, -0.0456, 0.0789, ...],
+      "index": 0
+    }
+  ],
+  "model": "embed:minilm",
+  "usage": {
+    "prompt_tokens": 4,
+    "total_tokens": 4
+  }
+}
+```
+
+### Batch Embeddings
+
+```bash
+curl http://localhost:8000/v1/embeddings \
+  -H "X-API-Key: your-gateway-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "embed:minilm",
+    "input": [
+      "First text to embed",
+      "Second text to embed"
+    ]
+  }'
+```
+
 ## Routing Behavior
 
 Solar-control automatically routes requests based on:
@@ -179,5 +231,6 @@ Solar-control automatically routes requests based on:
 For example:
 - A `/v1/chat/completions` request will only route to llama.cpp or HuggingFace Causal instances
 - A `/v1/classify` request will only route to HuggingFace Classification instances
+- A `/v1/embeddings` request will only route to HuggingFace Embedding instances
 
 The gateway automatically discovers which endpoints each instance supports when the model registry is refreshed.
