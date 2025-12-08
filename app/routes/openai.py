@@ -1,7 +1,12 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from app.models import ChatCompletionRequest, CompletionRequest, ClassifyRequest
+from app.models import (
+    ChatCompletionRequest,
+    CompletionRequest,
+    ClassifyRequest,
+    EmbeddingRequest,
+)
 from app.gateway import gateway
 
 
@@ -110,6 +115,37 @@ async def classify(request: ClassifyRequest, client: Request):
             request_data,
             client_ip,
             required_endpoint="/v1/classify",
+        )
+        return response
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/embeddings")
+async def embeddings(request: EmbeddingRequest, client: Request):
+    """Embeddings endpoint (OpenAI compatible).
+
+    Routes to instances that support the /v1/embeddings endpoint.
+    Returns embedding vectors from HuggingFace models using mean pooling
+    of the last hidden state.
+    """
+    try:
+        # Get client IP
+        client_ip = client.client.host if client.client else "unknown"
+
+        # Convert request to dict
+        request_data = request.model_dump(exclude_none=True)
+
+        # Route to embedding-capable instance
+        response = await gateway.route_request(
+            request.model,
+            "/v1/embeddings",
+            request_data,
+            client_ip,
+            required_endpoint="/v1/embeddings",
         )
         return response
 

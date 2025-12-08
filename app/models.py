@@ -136,13 +136,14 @@ class ClassifyRequest(BaseModel):
     model: str
     input: Any = Field(..., description="Text or list of texts to classify")
     return_all_scores: bool = Field(
-        default=False, description="Return scores for all classes, not just top prediction"
+        default=False,
+        description="Return scores for all classes, not just top prediction",
     )
 
 
 class ClassifyScoreItem(BaseModel):
     """Individual class score."""
-    
+
     label: str
     score: float
 
@@ -165,4 +166,39 @@ class ClassifyResponse(BaseModel):
     object: str = "classification"
     model: str
     choices: List[ClassifyChoice]
+    usage: Dict[str, int]
+
+
+# Embedding models for HuggingFace embedding backend
+
+
+class EmbeddingRequest(BaseModel):
+    """OpenAI-compatible embedding request for HuggingFace embedding models"""
+
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    input: Any = Field(..., description="Text or list of texts to embed")
+    encoding_format: Optional[str] = Field(
+        default="float", description="Encoding format: 'float' or 'base64'"
+    )
+    dimensions: Optional[int] = Field(
+        default=None, description="Optional dimension truncation"
+    )
+
+
+class EmbeddingData(BaseModel):
+    """Individual embedding result"""
+
+    object: str = "embedding"
+    embedding: List[float]
+    index: int
+
+
+class EmbeddingResponse(BaseModel):
+    """OpenAI-compatible embedding response"""
+
+    object: str = "list"
+    data: List[EmbeddingData]
+    model: str
     usage: Dict[str, int]
