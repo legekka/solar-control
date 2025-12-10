@@ -84,13 +84,20 @@ class HostConnectionManager:
             # Immediately mark host as offline
             host_manager.update_host_status(host_id, HostStatus.OFFLINE)
 
+            # Get host info for the broadcast
+            host = host_manager.get_host(host_id)
+
             # Broadcast status change to webui clients
             await webui_manager.broadcast(
                 {
                     "type": WSMessageType.HOST_STATUS.value,
                     "data": {
                         "host_id": host_id,
+                        "name": host.name if host else None,
                         "status": "offline",
+                        "url": host.url if host else None,
+                        "memory": host.memory.model_dump() if host and host.memory else None,
+                        "connected": False,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
                 }
@@ -374,6 +381,8 @@ async def host_channel(websocket: WebSocket):
                     "name": host_name,
                     "status": "online",
                     "url": host.url if host else None,
+                    "memory": host.memory.model_dump() if host and host.memory else None,
+                    "connected": True,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
             }
