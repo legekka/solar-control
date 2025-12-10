@@ -118,9 +118,16 @@ async def refresh_hosts_periodically():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the application"""
+    from app.gateway_logs import gateway_logger
+    from app.config import host_manager
+    
     # Startup
     print("Starting Solar Control...")
     print(f"Gateway API Key configured: {settings.api_key[:4]}...")
+
+    # Start gateway logger background flush task
+    await gateway_logger.start()
+    print("Gateway logger started")
 
     # Start gateway background tasks (registry refresh + health probes)
     await gateway.start_background_tasks()
@@ -145,6 +152,19 @@ async def lifespan(app: FastAPI):
         await gateway.stop_background_tasks()
     finally:
         await gateway.close()
+    
+    # Flush host manager (save any pending changes)
+    try:
+        await host_manager.flush_save()
+    except Exception as e:
+        print(f"Error flushing host manager: {e}")
+    
+    # Stop gateway logger (flushes remaining buffer)
+    try:
+        await gateway_logger.stop()
+    except Exception as e:
+        print(f"Error stopping gateway logger: {e}")
+    
     print("Solar Control shut down")
 
 

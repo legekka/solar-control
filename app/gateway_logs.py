@@ -1,17 +1,20 @@
 """
-Gateway event logging - simplified synchronous disk writes.
+Gateway event logging - async disk writes with buffering.
 
 Writes events and request summaries to JSONL files:
 - data/gateway-logs/YYYY-MM-DD.events.jsonl - All raw events
 - data/gateway-logs/YYYY-MM-DD.requests.jsonl - Request summaries (on completion)
+
+Uses a write queue to avoid blocking the event loop during heavy traffic.
 """
 
+import asyncio
 import json
-import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from collections import defaultdict
 
 
 def _utc_now_iso() -> str:
@@ -96,7 +99,11 @@ class RequestSummary:
 
 
 class GatewayLogger:
-    """Simple synchronous gateway event logger."""
+    """Async gateway event logger with write buffering."""
+
+    # Class-level constants for tuning
+    FLUSH_INTERVAL_S = 1.0  # Flush buffer every second
+    MAX_BUFFER_SIZE = 100  # Flush when buffer reaches this size
 
     def __init__(self) -> None:
         try:
@@ -113,17 +120,89 @@ class GatewayLogger:
             self.retention_days = 365
 
         self._inflight: Dict[str, RequestInProgress] = {}
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()  # Async lock for in-flight tracking
+        
+        # Write buffer: filename -> list of JSON strings
+        self._write_buffer: Dict[str, List[str]] = defaultdict(list)
+        self._buffer_lock = asyncio.Lock()  # Async lock for buffer access
+        
+        # Background flush task
+        self._flush_task: Optional[asyncio.Task] = None
+        self._stop_event: Optional[asyncio.Event] = None
+        
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def _write_jsonl(self, filename: str, data: dict) -> None:
-        """Write a single JSON line to a file."""
-        path = self.base_dir / filename
-        try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(data, ensure_ascii=False) + "\n")
-        except Exception as e:
-            print(f"[GatewayLogger] Failed to write to {path}: {e}")
+    async def start(self) -> None:
+        """Start the background flush task."""
+        if self._flush_task is not None:
+            return
+        self._stop_event = asyncio.Event()
+        self._flush_task = asyncio.create_task(self._flush_loop())
+
+    async def stop(self) -> None:
+        """Stop the background flush task and flush remaining buffer."""
+        if self._stop_event:
+            self._stop_event.set()
+        if self._flush_task:
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+            self._flush_task = None
+        # Final flush
+        await self._flush_all()
+
+    async def _flush_loop(self) -> None:
+        """Background task that periodically flushes the write buffer."""
+        while self._stop_event and not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self.FLUSH_INTERVAL_S
+                )
+            except asyncio.TimeoutError:
+                pass
+            await self._flush_all()
+
+    async def _flush_all(self) -> None:
+        """Flush all buffered writes to disk."""
+        async with self._buffer_lock:
+            if not self._write_buffer:
+                return
+            # Take ownership of buffer and clear it
+            to_write = dict(self._write_buffer)
+            self._write_buffer = defaultdict(list)
+
+        # Write to disk in a thread pool to avoid blocking
+        if to_write:
+            await asyncio.to_thread(self._sync_write_batch, to_write)
+
+    def _sync_write_batch(self, batch: Dict[str, List[str]]) -> None:
+        """Synchronously write a batch of lines to files (runs in thread pool)."""
+        for filename, lines in batch.items():
+            if not lines:
+                continue
+            path = self.base_dir / filename
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write("".join(lines))
+            except Exception as e:
+                print(f"[GatewayLogger] Failed to write to {path}: {e}")
+
+    async def _queue_write(self, filename: str, data: dict) -> None:
+        """Queue a JSON line to be written."""
+        line = json.dumps(data, ensure_ascii=False) + "\n"
+        should_flush = False
+        
+        async with self._buffer_lock:
+            self._write_buffer[filename].append(line)
+            # Check if we should trigger an early flush
+            total_lines = sum(len(lines) for lines in self._write_buffer.values())
+            if total_lines >= self.MAX_BUFFER_SIZE:
+                should_flush = True
+        
+        if should_flush:
+            # Flush in background, don't wait
+            asyncio.create_task(self._flush_all())
 
     def _get_date_str(self, timestamp: Optional[str] = None) -> str:
         """Get date string for file naming."""
@@ -131,9 +210,9 @@ class GatewayLogger:
             return _date_str_from_iso(timestamp)
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    def log_event(self, event: Dict[str, Any]) -> Optional[RequestSummary]:
+    async def log_event(self, event: Dict[str, Any]) -> Optional[RequestSummary]:
         """
-        Log a gateway event.
+        Log a gateway event asynchronously.
 
         Returns a RequestSummary if this event completes a request (for WebSocket broadcast).
         """
@@ -146,16 +225,16 @@ class GatewayLogger:
         if "timestamp" not in event:
             event["timestamp"] = timestamp
 
-        # Write raw event to disk
+        # Queue raw event write (non-blocking)
         date_str = self._get_date_str(timestamp)
-        self._write_jsonl(f"{date_str}.events.jsonl", event)
+        await self._queue_write(f"{date_str}.events.jsonl", event)
 
         if not request_id:
             return None
 
         # Track request state for summary building
         summary = None
-        with self._lock:
+        async with self._lock:
             if etype == "request_start":
                 endpoint = data.get("endpoint")
                 self._inflight[request_id] = RequestInProgress(
@@ -274,8 +353,8 @@ class GatewayLogger:
                     decode_ms_per_token=decode_ms,
                 )
 
-                # Write summary to disk
-                self._write_jsonl(f"{date_str}.requests.jsonl", asdict(summary))
+                # Queue summary write (non-blocking)
+                await self._queue_write(f"{date_str}.requests.jsonl", asdict(summary))
 
         return summary
 

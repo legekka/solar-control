@@ -51,6 +51,8 @@ class OpenAIGateway:
 
         WebSocket 2.0: Prefer using cached instance data from WebSocket-connected hosts.
         Only fall back to HTTP polling for hosts not connected via WebSocket.
+        
+        HTTP polling for non-WebSocket hosts is done in parallel for better performance.
         """
         await self._ensure_session()
 
@@ -73,145 +75,142 @@ class OpenAIGateway:
         new_model_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         seen_instance_keys: Set[str] = set()
 
-        # Process each host
+        # Separate hosts into WebSocket-connected and HTTP-polling groups
+        ws_hosts = []
+        http_hosts = []
+        
         for host in host_manager.get_all_hosts():
-            previous_entries = previous_entries_by_host.get(host.id, [])
-
-            # Check if host is connected via WebSocket
             if host_connection_manager.is_host_connected(host.id):
-                # Use cached instance data from WebSocket
-                ws_instances = host_connection_manager.get_host_instances(host.id)
+                ws_hosts.append(host)
+            else:
+                http_hosts.append(host)
 
-                # Host is connected, so it's online
-                host_manager.update_host_status(host.id, HostStatus.ONLINE)
+        # Process WebSocket-connected hosts (instant, from cache)
+        for host in ws_hosts:
+            ws_instances = host_connection_manager.get_host_instances(host.id)
+            host_manager.update_host_status(host.id, HostStatus.ONLINE)
 
-                # Add running instances to registry
-                for instance in ws_instances:
-                    if instance.get("status") == "running":
-                        alias = instance.get("alias", "unknown")
-                        port = instance.get("port")
+            for instance in ws_instances:
+                if instance.get("status") == "running":
+                    alias = instance.get("alias", "unknown")
+                    port = instance.get("port")
 
-                        if not port:
-                            continue
+                    if not port:
+                        continue
 
-                        # Build instance URL
-                        host_base = host.url.rsplit(":", 1)[0]  # Remove port
-                        instance_url = f"{host_base}:{port}"
+                    host_base = host.url.rsplit(":", 1)[0]
+                    instance_url = f"{host_base}:{port}"
 
-                        # Get supported endpoints (default to standard OpenAI endpoints)
-                        supported_endpoints = instance.get(
-                            "supported_endpoints",
-                            [
-                                "/v1/chat/completions",
-                                "/v1/completions",
-                                "/v1/models",
-                            ],
-                        )
-                        backend_type = instance.get("backend_type", "llamacpp")
+                    supported_endpoints = instance.get(
+                        "supported_endpoints",
+                        ["/v1/chat/completions", "/v1/completions", "/v1/models"],
+                    )
+                    backend_type = instance.get("backend_type", "llamacpp")
 
-                        entry = {
-                            "host_id": host.id,
-                            "instance_id": instance["id"],
-                            "url": instance_url,
-                            "api_key": host.api_key,  # Use host's API key
-                            "model_alias": alias,
-                            "supported_endpoints": supported_endpoints,
-                            "backend_type": backend_type,
-                        }
-                        new_model_map[alias].append(entry)
-                        key = f"{host.id}-{instance['id']}"
-                        seen_instance_keys.add(key)
-                        if key not in self.instance_health:
-                            self.instance_health[key] = {
-                                "last_ok": None,
-                                "cooldown_until": None,
-                            }
-                continue
-
-            # Fallback: HTTP polling for hosts not connected via WebSocket
-            try:
-                # Get instances from host
-                url = f"{host.url}/instances"
-                headers = {"X-API-Key": host.api_key}
-
-                session = self.session
-                async with session.get(
-                    url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
-                    if response.status == 200:
-                        instances = await response.json()
-
-                        # Update host status
-                        host_manager.update_host_status(host.id, HostStatus.ONLINE)
-
-                        # Add running instances to registry
-                        for instance in instances:
-                            if instance.get("status") == "running":
-                                alias = instance["config"]["alias"]
-                                port = instance.get("port")
-
-                                # Build instance URL
-                                host_base = host.url.rsplit(":", 1)[0]  # Remove port
-                                instance_url = f"{host_base}:{port}"
-                                instance_api_key = instance["config"]["api_key"]
-
-                                # Get supported endpoints (default to standard OpenAI endpoints)
-                                supported_endpoints = instance.get(
-                                    "supported_endpoints",
-                                    [
-                                        "/v1/chat/completions",
-                                        "/v1/completions",
-                                        "/v1/models",
-                                    ],
-                                )
-                                # Get backend type if available
-                                backend_type = instance.get("config", {}).get(
-                                    "backend_type", "llamacpp"
-                                )
-
-                                entry = {
-                                    "host_id": host.id,
-                                    "instance_id": instance["id"],
-                                    "url": instance_url,
-                                    "api_key": instance_api_key,
-                                    "model_alias": alias,
-                                    "supported_endpoints": supported_endpoints,
-                                    "backend_type": backend_type,
-                                }
-                                new_model_map[alias].append(entry)
-                                key = f"{host.id}-{instance['id']}"
-                                seen_instance_keys.add(key)
-                                # Ensure health record exists
-                                if key not in self.instance_health:
-                                    self.instance_health[key] = {
-                                        "last_ok": None,
-                                        "cooldown_until": None,
-                                    }
-                    else:
-                        host_manager.update_host_status(host.id, HostStatus.ERROR)
-                        # Retain previous entries for this host
-                        for alias, inst in previous_entries:
-                            new_model_map[alias].append(inst)
-                            key = f"{inst['host_id']}-{inst['instance_id']}"
-                            seen_instance_keys.add(key)
-                            if key not in self.instance_health:
-                                self.instance_health[key] = {
-                                    "last_ok": None,
-                                    "cooldown_until": None,
-                                }
-
-            except Exception:
-                host_manager.update_host_status(host.id, HostStatus.OFFLINE)
-                # Retain previous entries for this host
-                for alias, inst in previous_entries:
-                    new_model_map[alias].append(inst)
-                    key = f"{inst['host_id']}-{inst['instance_id']}"
+                    entry = {
+                        "host_id": host.id,
+                        "instance_id": instance["id"],
+                        "url": instance_url,
+                        "api_key": host.api_key,
+                        "model_alias": alias,
+                        "supported_endpoints": supported_endpoints,
+                        "backend_type": backend_type,
+                    }
+                    new_model_map[alias].append(entry)
+                    key = f"{host.id}-{instance['id']}"
                     seen_instance_keys.add(key)
                     if key not in self.instance_health:
                         self.instance_health[key] = {
                             "last_ok": None,
                             "cooldown_until": None,
                         }
+
+        # Process HTTP hosts in parallel
+        if http_hosts:
+            async def poll_host(host):
+                """Poll a single host for instances."""
+                previous_entries = previous_entries_by_host.get(host.id, [])
+                result_entries = []
+                result_keys = set()
+                
+                try:
+                    url = f"{host.url}/instances"
+                    headers = {"X-API-Key": host.api_key}
+
+                    async with self.session.get(
+                        url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)
+                    ) as response:
+                        if response.status == 200:
+                            instances = await response.json()
+                            host_manager.update_host_status(host.id, HostStatus.ONLINE)
+
+                            for instance in instances:
+                                if instance.get("status") == "running":
+                                    alias = instance["config"]["alias"]
+                                    port = instance.get("port")
+
+                                    host_base = host.url.rsplit(":", 1)[0]
+                                    instance_url = f"{host_base}:{port}"
+                                    instance_api_key = instance["config"]["api_key"]
+
+                                    supported_endpoints = instance.get(
+                                        "supported_endpoints",
+                                        ["/v1/chat/completions", "/v1/completions", "/v1/models"],
+                                    )
+                                    backend_type = instance.get("config", {}).get(
+                                        "backend_type", "llamacpp"
+                                    )
+
+                                    entry = {
+                                        "host_id": host.id,
+                                        "instance_id": instance["id"],
+                                        "url": instance_url,
+                                        "api_key": instance_api_key,
+                                        "model_alias": alias,
+                                        "supported_endpoints": supported_endpoints,
+                                        "backend_type": backend_type,
+                                    }
+                                    result_entries.append((alias, entry))
+                                    key = f"{host.id}-{instance['id']}"
+                                    result_keys.add(key)
+                        else:
+                            host_manager.update_host_status(host.id, HostStatus.ERROR)
+                            # Retain previous entries
+                            for alias, inst in previous_entries:
+                                result_entries.append((alias, inst))
+                                key = f"{inst['host_id']}-{inst['instance_id']}"
+                                result_keys.add(key)
+
+                except Exception:
+                    host_manager.update_host_status(host.id, HostStatus.OFFLINE)
+                    # Retain previous entries
+                    for alias, inst in previous_entries:
+                        result_entries.append((alias, inst))
+                        key = f"{inst['host_id']}-{inst['instance_id']}"
+                        result_keys.add(key)
+                
+                return result_entries, result_keys
+
+            # Poll all HTTP hosts in parallel
+            results = await asyncio.gather(
+                *[poll_host(host) for host in http_hosts],
+                return_exceptions=True
+            )
+            
+            # Aggregate results
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                entries, keys = result
+                for alias, entry in entries:
+                    new_model_map[alias].append(entry)
+                    key = f"{entry['host_id']}-{entry['instance_id']}"
+                    if key not in self.instance_health:
+                        self.instance_health[key] = {
+                            "last_ok": None,
+                            "cooldown_until": None,
+                        }
+                seen_instance_keys.update(keys)
 
         # Atomically replace the registry with the newly built map
         self.model_to_hosts = defaultdict(list)

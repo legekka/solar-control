@@ -269,13 +269,16 @@ async def broadcast_host_status(status_update: dict):
 
 
 async def broadcast_routing_event(event_data: dict):
-    """Broadcast routing events to all connected webui clients and log to disk."""
+    """Broadcast routing events to all connected webui clients and log to disk.
+    
+    Logging is now async with buffered writes to avoid blocking the event loop.
+    """
     from dataclasses import asdict
     from app.gateway_logs import gateway_logger
 
-    # Log event to disk (synchronous, returns summary if request completed)
+    # Log event to disk (async with buffered writes)
     try:
-        summary = gateway_logger.log_event(event_data)
+        summary = await gateway_logger.log_event(event_data)
 
         # If request completed, broadcast summary with request_type
         if summary:
