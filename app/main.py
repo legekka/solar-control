@@ -6,21 +6,28 @@ import asyncio
 
 from app.config import settings
 from app.gateway import gateway
-from app.gateway_logs import event_logger
 from app.routes import hosts, openai, websockets
 from app.routes import gateway as gateway_routes
 from app.routes.websockets import broadcast_host_status
 
 
 async def refresh_hosts_periodically():
-    """Background task to refresh host statuses every 10 seconds"""
+    """Background task to check hosts NOT connected via WebSocket.
+
+    WebSocket 2.0: Hosts connected via WebSocket push their status/health directly.
+    This task only polls hosts that haven't established a WebSocket connection yet
+    (e.g., hosts that haven't been updated to 2.0).
+    """
     import aiohttp
     from app.config import host_manager
     from app.models import HostStatus
+    from app.routes.websockets import host_connection_manager
 
     while True:
         try:
-            await asyncio.sleep(10)  # Check every 10 seconds
+            await asyncio.sleep(
+                30
+            )  # Check less frequently (30s) - WebSocket handles most updates
 
             hosts = host_manager.get_all_hosts()
             if not hosts:
@@ -28,6 +35,10 @@ async def refresh_hosts_periodically():
 
             async with aiohttp.ClientSession() as session:
                 for host in hosts:
+                    # Skip hosts that are connected via WebSocket
+                    if host_connection_manager.is_host_connected(host.id):
+                        continue
+
                     old_status = host.status
                     memory_data = None
 
@@ -114,12 +125,6 @@ async def lifespan(app: FastAPI):
     # Start gateway background tasks (registry refresh + health probes)
     await gateway.start_background_tasks()
     print("Gateway background tasks started")
-    # Start gateway event logger
-    try:
-        await event_logger.start()
-        print("Gateway event logger started")
-    except Exception as e:
-        print(f"Failed to start gateway event logger: {e}")
 
     # Start background task for host status monitoring
     task = asyncio.create_task(refresh_hosts_periodically())
@@ -140,11 +145,6 @@ async def lifespan(app: FastAPI):
         await gateway.stop_background_tasks()
     finally:
         await gateway.close()
-    # Stop event logger
-    try:
-        await event_logger.stop()
-    except Exception:
-        pass
     print("Solar Control shut down")
 
 

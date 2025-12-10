@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"  # Ignore extra env vars (e.g., SOLAR_CONTROL_URL meant for solar-host)
 
 
 settings = Settings()

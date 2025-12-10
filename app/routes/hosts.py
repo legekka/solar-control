@@ -441,3 +441,34 @@ async def get_instance_state(host_id: str, instance_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{host_id}/instances/{instance_id}/logs")
+async def get_instance_logs(host_id: str, instance_id: str):
+    """Proxy log buffer for a specific instance on a host.
+
+    Returns the in-memory log buffer (historical logs).
+    """
+    host = host_manager.get_host(host_id)
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{host.url}/instances/{instance_id}/logs"
+            headers = {"X-API-Key": host.api_key}
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    text = await response.text()
+                    raise HTTPException(
+                        status_code=response.status,
+                        detail=f"Failed to get instance logs: {text}",
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
