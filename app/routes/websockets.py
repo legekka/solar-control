@@ -364,6 +364,12 @@ async def host_channel(websocket: WebSocket):
             host_connection_manager.update_host_instances(
                 host_id, registration.instances
             )
+            # Trigger immediate registry refresh so instances are routable right away
+            try:
+                from app.gateway import gateway
+                asyncio.create_task(gateway.refresh_model_registry())
+            except Exception:
+                pass
 
         # Send registration acknowledgement with the assigned host_id
         await websocket.send_json(
