@@ -6,6 +6,7 @@ from app.models import (
     CompletionRequest,
     ClassifyRequest,
     EmbeddingRequest,
+    RerankRequest,
 )
 from app.gateway import gateway
 
@@ -146,6 +147,36 @@ async def embeddings(request: EmbeddingRequest, client: Request):
             request_data,
             client_ip,
             required_endpoint="/v1/embeddings",
+        )
+        return response
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rerank")
+async def rerank(request: RerankRequest, client: Request):
+    """Rerank endpoint (OpenAI compatible).
+
+    Routes to instances that support the /v1/rerank endpoint.
+    Reranks documents based on relevance to a query using reranker models.
+    """
+    try:
+        # Get client IP
+        client_ip = client.client.host if client.client else "unknown"
+
+        # Convert request to dict
+        request_data = request.model_dump(exclude_none=True)
+
+        # Route to reranker-capable instance
+        response = await gateway.route_request(
+            request.model,
+            "/v1/rerank",
+            request_data,
+            client_ip,
+            required_endpoint="/v1/rerank",
         )
         return response
 
