@@ -315,6 +315,8 @@ async def root():
             "/v1/chat/completions",
             "/v1/completions",
             "/v1/classify",
+            "/v1/embeddings",
+            "/v1/rerank",
         ],
     }
 

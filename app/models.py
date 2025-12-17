@@ -204,6 +204,42 @@ class EmbeddingResponse(BaseModel):
     usage: Dict[str, int]
 
 
+# Reranking models for reranker backend
+
+
+class RerankRequest(BaseModel):
+    """OpenAI-compatible rerank request for reranker models"""
+
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    query: str = Field(..., description="Query text to rank documents against")
+    documents: List[str] = Field(..., description="List of documents to rerank")
+    top_n: Optional[int] = Field(
+        default=None, description="Number of top results to return (default: all)"
+    )
+    return_documents: Optional[bool] = Field(
+        default=True, description="Whether to return document text in results"
+    )
+
+
+class RerankResult(BaseModel):
+    """Individual rerank result"""
+
+    index: int
+    document: Optional[str] = None
+    relevance_score: float
+
+
+class RerankResponse(BaseModel):
+    """OpenAI-compatible rerank response"""
+
+    id: str
+    results: List[RerankResult]
+    model: str
+    usage: Dict[str, int]
+
+
 # WebSocket 2.0 Message Types
 
 
